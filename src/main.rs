@@ -1,364 +1,29 @@
-use std::{collections::{HashMap, VecDeque}, env, fmt, fs, io::{self, Read}, process::ExitCode, time::SystemTime, usize};
+use std::{collections::{HashMap, VecDeque}, env, fs, io::{self, Read, Write}, process::ExitCode, time::SystemTime, usize};
+use std::path::Path;
+use std::fs::File;
 
-enum Instruction {
-    MoveRight,
-    MoveLeft,
-    Increment,
-    Decrement,
-    Write,
-    Read,
-    JumpIfZero,
-    JumpUnlessZero
-}
-
-impl fmt::Display for Instruction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Instruction::MoveRight => write!(f, ">"),
-            Instruction::MoveLeft => write!(f, "<"),
-            Instruction::Increment => write!(f, "+"),
-            Instruction::Decrement => write!(f, "-"),
-            Instruction::Write => write!(f, "+"),
-            Instruction::Read => write!(f, "-"),
-            Instruction::JumpIfZero => write!(f, "["),
-            Instruction::JumpUnlessZero => write!(f, "]"),
-        }
-    }
-}
-
-struct State {
-    tape: VecDeque<u8>,
-    head_pos: usize,
-
-    program_counter: usize,
-    program: Vec<Instruction>,
-    execution_counter: Vec<usize>,
-
-    jump_dests: HashMap<usize, usize>,
-}
-
-fn lex(program : &str) -> Vec<Instruction> {
-    let mut insts = Vec::new();
-
-    for c in program.chars() {
-        match c {
-            '>' => insts.push(Instruction::MoveRight),
-            '<' => insts.push(Instruction::MoveLeft),
-            '+' => insts.push(Instruction::Increment),
-            '-' => insts.push(Instruction::Decrement),
-            '.' => insts.push(Instruction::Write),
-            ',' => insts.push(Instruction::Read),
-            '[' => insts.push(Instruction::JumpIfZero),
-            ']' => insts.push(Instruction::JumpUnlessZero),
-            _ => ()
-        }
-    }
-
-    return insts;
-}
-
-fn find_matching_jump_if_zero(insts : &Vec<Instruction>, start_pc : usize) -> usize {
-    let mut pc = start_pc + 1;
-    let mut brace_count = 1;
-
-    loop {
-        match insts[pc] {
-            Instruction::JumpIfZero => brace_count += 1,
-            Instruction::JumpUnlessZero => brace_count -= 1,
-            _ => (),
-        }
-
-        if brace_count == 0 {
-            return pc;
-        }
-
-        pc += 1;
-    }
-}
-
-fn find_matching_jump_unless_zero(insts : &Vec<Instruction>, start_pc : usize) -> usize {
-    let mut pc = start_pc - 1;
-    let mut brace_count = 1;
-
-    loop {
-        match insts[pc] {
-            Instruction::JumpUnlessZero => brace_count += 1,
-            Instruction::JumpIfZero => brace_count -= 1,
-            _ => (),
-        }
-
-        if brace_count == 0 {
-            return pc;
-        }
-
-        pc -= 1;
-    }
-}
-
-fn compute_jump_dests(insts : &Vec<Instruction>) -> HashMap<usize, usize> {
-    let mut jump_dests = HashMap::new();
-
-    for pc in 0..insts.len() {
-        match insts[pc] {
-            Instruction::JumpIfZero => {
-                jump_dests.insert(pc, find_matching_jump_if_zero(&insts, pc));
-                ()
-            },
-            Instruction::JumpUnlessZero => {
-                jump_dests.insert(pc, find_matching_jump_unless_zero(&insts, pc));
-                ()
-            }
-            _ => (),
-        }
-    }
-
-    return jump_dests;
-}
-
-#[derive(Eq)]
-struct LoopExecution {
-    pc : usize,
-    num_times_executed : usize,
-}
-
-impl Ord for LoopExecution {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.num_times_executed.cmp(&self.num_times_executed)
-    }
-}
-
-impl PartialOrd for LoopExecution {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for LoopExecution {
-    fn eq(&self, other: &Self) -> bool {
-        self.num_times_executed == other.num_times_executed
-    }
-}
-
-impl State {
-    pub fn new(input: &str) -> Self {
-        let mut t = VecDeque::new();
-        t.push_back(0);
-
-        let program = lex(input);
-        let execution_counter = vec![0; program.len()];
-        let jump_dests = compute_jump_dests(&program);
-
-        State {
-            tape: t,
-            head_pos: 0,
-            program_counter: 0,
-            program,
-            execution_counter,
-            jump_dests,
-        }
-    }
-
-    fn move_right(&mut self) {
-        self.head_pos += 1;
-
-        if self.head_pos >= self.tape.len() {
-            self.tape.push_back(0);
-        }
-
-        self.program_counter += 1;
-    }
-
-    fn move_left(&mut self) {
-        if self.head_pos == 0 {
-            self.tape.push_front(0);
-        } else {
-            self.head_pos -= 1;
-        }
-
-        self.program_counter += 1;
-    }
-
-    fn increment(&mut self) {
-        let curr = self.tape[self.head_pos];
-        self.tape[self.head_pos] = u8::wrapping_add(curr, 1u8);
-
-        self.program_counter += 1;
-    }
-
-    fn decrement(&mut self) {
-        self.tape[self.head_pos] = u8::wrapping_sub(self.tape[self.head_pos], 1u8);
-
-        self.program_counter += 1;
-    }
-
-    fn write(&mut self) {
-        let msg = char::from_u32(self.tape[self.head_pos].into()).unwrap();
-        print!("{}", msg);
-
-        self.program_counter += 1;
-    }
-
-    fn read(&mut self) {
-        // Read a character from stdin
-        let mut buf = [0u8; 1];
-        let _ = io::stdin().read_exact(&mut buf);
-
-        self.tape[self.head_pos] = buf[0];
-
-        self.program_counter += 1;
-    }
-
-    fn jump_if_zero(&mut self) {
-        let curr_value = self.tape[self.head_pos];
-        
-        if curr_value == 0 {
-            self.program_counter = self.jump_dests[&self.program_counter];
-        } else {
-            self.program_counter += 1;
-        }
-    }
-
-    fn jump_unless_zero(&mut self) {
-        let curr_value = self.tape[self.head_pos];
-
-        if curr_value != 0 {
-            self.program_counter = self.jump_dests[&self.program_counter];
-        } else {
-            self.program_counter += 1;
-        }
-    }
-
-    fn interp(&mut self)
-    {
-        loop {
-            if self.program_counter >= self.program.len() {
-                break;
-            }
-
-            self.execution_counter[self.program_counter] += 1;
-
-            match self.program[self.program_counter] {
-                Instruction::MoveRight => self.move_right(),
-                Instruction::MoveLeft => self.move_left(),
-                Instruction::Increment => self.increment(),
-                Instruction::Decrement => self.decrement(),
-                Instruction::Write => self.write(),
-                Instruction::Read => self.read(),
-                Instruction::JumpIfZero => self.jump_if_zero(),
-                Instruction::JumpUnlessZero => self.jump_unless_zero(),
-            }
-        }
-    }
-
-    fn get_loop_executions(&self) -> (Vec<LoopExecution>, Vec<LoopExecution>) {
-        let mut simple_loops : Vec<LoopExecution> = Vec::new();
-        let mut complex_loops : Vec<LoopExecution> = Vec::new();
-
-        let mut curr_loop : Option<LoopExecution> = Option::None;
-        let mut has_io = false;
-        let mut pointer_offset : i32 = 0;
-        let mut pointer_value : i32 = 0;
-
-        for pc in 0..self.program.len() {
-            match self.program[pc] {
-                Instruction::MoveRight => pointer_offset += 1,
-                Instruction::MoveLeft => pointer_offset -= 1,
-                Instruction::Write | Instruction::Read => has_io = true,
-
-                Instruction::Increment => {
-                    if pointer_offset == 0 {
-                        pointer_value += 1;
-                    }
-                },
-                Instruction::Decrement => {
-                    if pointer_offset == 0 {
-                        pointer_value -= 1;
-                    }
-                },
-
-                _ => (),
-            }
-
-            match self.program[pc] {
-                Instruction::JumpIfZero => {
-                    curr_loop = Some(LoopExecution{pc, num_times_executed: 0});
-                    has_io = false;
-                    pointer_offset = 0;
-                    pointer_value = 0;
-                },
-
-                Instruction::JumpUnlessZero => {
-                    let curr = curr_loop;
-                    curr_loop = Option::None;
-
-                    let index_changed_by_1 = pointer_value.abs() == 1;
-
-                    match curr {
-                        Option::None => (),
-                        Option::Some(l) => {
-                            if !has_io && pointer_offset == 0 && index_changed_by_1 {
-                                simple_loops.push(l);
-                            } else {
-                                complex_loops.push(l);
-                            }
-                        }
-                    }
-                },
-
-                _ => {
-                    match curr_loop {
-                        Option::None => (),
-                        Option::Some(ref mut l) => {
-                            if l.num_times_executed == 0 {
-                                l.num_times_executed = self.execution_counter[pc];
-                            }
-                        },
-                    }
-                },
-            }
-        }
-
-        simple_loops.sort();
-        complex_loops.sort();
-
-        return (simple_loops, complex_loops);
-    }
-
-    fn print_profile_info(&mut self)
-    {
-        println!("PC\tOP\t# EXECUTED");
-        for pc in 0..self.program.len() {
-            println!("{}\t{}\t{}", pc, self.program[pc], self.execution_counter[pc]);
-        }
-
-        let (simple_loops, complex_loops) = self.get_loop_executions();
-
-        println!("\nSIMPLE LOOPS");
-        println!("PC\t# EXECUTED");
-        for l in simple_loops {
-            println!("{}\t{}", l.pc, l.num_times_executed);
-        }
-
-        println!("\nCOMPLEX LOOPS");
-        println!("PC\t# EXECUTED");
-        for l in complex_loops {
-            println!("{}\t{}", l.pc, l.num_times_executed);
-        }
-    }
-}
+mod common;
+mod compile;
+mod interp;
 
 fn print_usage() {
-    println!("Usage: brainbug [path to bf file] [options]");
-    println!("Options: -p  Print profile data");
+    println!("Usage: brainbug interp [path to bf file] [options]");
+    println!("       brainbug compile [path to bf file] [options]");
+    println!("Options: -p  Print profile data (interp only)");
     println!("         -t  Print execution time");
+    println!("         -r  execute compiled binary (compile only)");
+    println!("         -S  compile to asm instead of exe (compile only)");
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
+    let mut mode = "";
     let mut file_path = "";
     let mut profile = false;
     let mut time = false;
+    let mut run = false;
+    let mut compile_to_asm = false;
 
     for i in 1..args.len() {
         // Flag arguments
@@ -368,327 +33,82 @@ fn main() -> ExitCode {
         } else if args[i] == "-t" {
             time = true;
             continue;
+        } else if args[i] == "-r" {
+            run = true;
+            continue;
+        } else if args[i] == "-S" {
+            compile_to_asm = true;
+            continue;
         }
 
         // Positional arguments
-        if !file_path.is_empty() {
+        if mode.is_empty() {
+            mode = &args[i];
+        } else if file_path.is_empty() {
+            file_path = &args[i];
+        } else {
             print_usage();
             return ExitCode::from(1);
         }
-
-        file_path = &args[i];
     }
 
-    let program = fs::read_to_string(file_path).expect("unable to read file");
-
-    let start_time = SystemTime::now();
-
-    let mut state = State::new(&program);
-    state.interp();
-
-    if time {
-        println!("\nExecution time: {}", start_time.elapsed().unwrap().as_secs_f64());
+    if mode.is_empty() || file_path.is_empty() {
+        print_usage();
+        return ExitCode::from(1);
+    }
+    if profile && mode != "interp" {
+        print_usage();
+        return ExitCode::from(1);
+    }
+    if (run || compile_to_asm) && mode != "compile" {
+        print_usage();
+        return ExitCode::from(1);
     }
 
-    if profile {
-        state.print_profile_info();
-    }
+    let input = fs::read_to_string(file_path).expect("unable to read file");
+
+    if mode == "interp" {
+        let start_time = SystemTime::now();
+
+        let program = common::lex(&input);
+        let mut state = interp::State::new(program);
+        state.interp();
+
+        if time {
+            println!("\nExecution time: {}", start_time.elapsed().unwrap().as_secs_f64());
+        }
+
+        if profile {
+            state.print_profile_info();
+        }
+    } else if mode == "compile" {
+        let program = common::lex(&input);
+        let compiled_asm = compile::compile_to_asm(&program);
+
+        let input_filepath = Path::new(file_path);
+
+        if compile_to_asm {
+            let output_filepath = input_filepath.file_stem().unwrap().to_str().unwrap().to_owned() + ".S";
+            let mut file = File::create(output_filepath.clone()).expect("Unable to open output file");
+            write!(file, "{}", compiled_asm).unwrap();
+
+            println!("Result written to {}", output_filepath);
+        } else {
+            let output_filepath = input_filepath.file_stem().unwrap().to_str().unwrap().to_owned() + ".exe";
+            compile::compile_to_exe(&compiled_asm, &output_filepath).expect("failed to assemble and link compiled asm");
+            println!("Result written to {}", output_filepath);
+
+            if run {
+                let start_time = SystemTime::now();
+
+                compile::run(&output_filepath).expect("failed to run compiled BF program");
+
+                if time {
+                    println!("\nExecution time: {}", start_time.elapsed().unwrap().as_secs_f64());
+                }
+            }
+
+        }    }
 
     return ExitCode::from(0);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_move_right() {
-        let program = ">";
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.head_pos, 1);
-        assert_eq!(state.tape.len(), 2);
-    }
-
-    #[test]
-    fn test_move_right_resize() {
-        let move_amt = 16;
-        let program = (0..move_amt).map(|_| ">").collect::<String>();
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.head_pos, move_amt);
-        assert_eq!(state.tape.len(), (move_amt + 1).try_into().unwrap());
-    }
-
-    #[test]
-    fn test_move_left() {
-        let program = "><";
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.head_pos, 0);
-    }
-
-    #[test]
-    fn test_move_left_negative() {
-        let program = "<+";
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.head_pos, 0);
-        assert_eq!(state.tape.len(), 2);
-        assert_eq!(state.tape[0], 1);
-        assert_eq!(state.tape[1], 0);
-    }
-
-    #[test]
-    fn test_increment() {
-        let program = "+";
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[0], 1);
-    }
-
-    #[test]
-    fn test_decrement() {
-        let program = "-";
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[0], u8::MAX);
-    }
-
-    #[test]
-    fn test_jump_if_zero1() {
-        // Skip increment
-        let program = "[+]";
-
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[0], 0);
-    }
-
-    #[test]
-    fn test_jump_if_zero2() {
-        // Don't skip outer brace, but skipper inner one.
-        let program = "+[>[>+]>>>]";
-
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[0], 1);
-        assert_eq!(state.tape[1], 0);
-    }
-
-    #[test]
-    fn test_jump_if_zero3() {
-        let program = "+[>++>]";
-
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[0], 1);
-        assert_eq!(state.tape[1], 2);
-    }
-
-    #[test]
-    fn test_jump_unless_zero1() {
-        // Set loop idx to 5, then increment cell 1 5 times
-        let program = "+++++[>+<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[0], 0);
-        assert_eq!(state.tape[1], 5);
-    }
-
-    #[test]
-    fn test_ctrl_flow1() {
-        let program = "+++++[>++++++++++[>+<-]<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.tape[2], 50);
-    }
-
-    #[test]
-    fn test_execution_counter() {
-        let program = "+++++[>+<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-
-        assert_eq!(state.execution_counter[0], 1);
-        assert_eq!(state.execution_counter[1], 1);
-        assert_eq!(state.execution_counter[2], 1);
-        assert_eq!(state.execution_counter[3], 1);
-        assert_eq!(state.execution_counter[4], 1);
-
-        assert_eq!(state.execution_counter[5], 5);
-        assert_eq!(state.execution_counter[6], 5);
-        assert_eq!(state.execution_counter[7], 5);
-        assert_eq!(state.execution_counter[8], 5);
-        assert_eq!(state.execution_counter[9], 5);
-    }
-
-    #[test]
-    fn test_get_loop_profile_no_loops() {
-        let program = "+++++";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 0);
-        assert_eq!(complex_loops.len(), 0);
-    }
-
-    #[test]
-    fn test_get_loop_profile_one_simple() {
-        let program = ">+++[>+++<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 1);
-        assert_eq!(simple_loops[0].pc, 4);
-        assert_eq!(simple_loops[0].num_times_executed, 3);
-
-        assert_eq!(complex_loops.len(), 0);
-    }
-
-    #[test]
-    fn test_get_loop_profile_one_simple_no_exe() {
-        let program = "+++>[>+++<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 1);
-        assert_eq!(simple_loops[0].pc, 4);
-        assert_eq!(simple_loops[0].num_times_executed, 0);
-
-        assert_eq!(complex_loops.len(), 0);
-    }
-
-    #[test]
-    fn test_get_loop_profile_one_complex_io() {
-        let program = ">+++[>.+++<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 0);
-
-        assert_eq!(complex_loops.len(), 1);
-        assert_eq!(complex_loops[0].pc, 4);
-        assert_eq!(complex_loops[0].num_times_executed, 3);
-    }
-
-    #[test]
-    fn test_get_loop_profile_one_complex_pointer_offset_change() {
-        let program = ">+++[>]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 0);
-
-        assert_eq!(complex_loops.len(), 1);
-        assert_eq!(complex_loops[0].pc, 4);
-        assert_eq!(complex_loops[0].num_times_executed, 1);
-    }
-
-    #[test]
-    fn test_get_loop_profile_one_complex_index() {
-        let program = ">++++[>+<--]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 0);
-
-        assert_eq!(complex_loops.len(), 1);
-        assert_eq!(complex_loops[0].pc, 5);
-        assert_eq!(complex_loops[0].num_times_executed, 2);
-    }
-
-    #[test]
-    fn test_get_loop_profile_simple_nested() {
-        let program = ">+++[>+++++[>++<-]<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 1);
-        assert_eq!(simple_loops[0].pc, 11);
-        assert_eq!(simple_loops[0].num_times_executed, 15);
-
-        assert_eq!(complex_loops.len(), 0);
-    }
-
-    #[test]
-    fn test_get_loop_profile_complex_nested() {
-        let program = ">+++[>++++++[>++<--]<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 0);
-
-        assert_eq!(complex_loops.len(), 1);
-        assert_eq!(complex_loops[0].pc, 12);
-        assert_eq!(complex_loops[0].num_times_executed, 9);
-    }
-
-    #[test]
-    fn test_get_loop_profile_simple_sorted() {
-        let program = "+++[>--<-]++[>--<-]++++[>--<-]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 3);
-        assert_eq!(simple_loops[0].pc, 23);
-        assert_eq!(simple_loops[0].num_times_executed, 4);
-        assert_eq!(simple_loops[1].pc, 3);
-        assert_eq!(simple_loops[1].num_times_executed, 3);
-        assert_eq!(simple_loops[2].pc, 12);
-        assert_eq!(simple_loops[2].num_times_executed, 2);
-
-        assert_eq!(complex_loops.len(), 0);
-    }
-
-    #[test]
-    fn test_get_loop_profile_complex_sorted() {
-        let program = "++++[>--<--]++[>--<--]++++++[>--<--]";
-
-        let mut state = State::new(&program);
-        state.interp();
-        
-        let (simple_loops, complex_loops) = state.get_loop_executions();
-        assert_eq!(simple_loops.len(), 0);
-
-        assert_eq!(complex_loops.len(), 3);
-        assert_eq!(complex_loops[0].pc, 28);
-        assert_eq!(complex_loops[0].num_times_executed, 3);
-        assert_eq!(complex_loops[1].pc, 4);
-        assert_eq!(complex_loops[1].num_times_executed, 2);
-        assert_eq!(complex_loops[2].pc, 14);
-        assert_eq!(complex_loops[2].num_times_executed, 1);
-    }
 }
