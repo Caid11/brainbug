@@ -1,4 +1,5 @@
-use std::{collections::{HashMap, VecDeque}, io::{self, Read}, usize};
+use core::panic;
+use std::{collections::{HashMap, VecDeque}, io::{self, ErrorKind, Read}, usize};
 
 use crate::common::*;
 
@@ -74,7 +75,12 @@ impl State {
     fn read(&mut self) {
         // Read a character from stdin
         let mut buf = [0u8; 1];
-        let _ = io::stdin().read_exact(&mut buf);
+        let read_res = io::stdin().read_exact(&mut buf);
+        match read_res {
+            Ok(_) => (),
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => buf[0] = 255,
+            Err(_) => panic!("Error while reading from stdin!")
+        }
 
         self.tape[self.head_pos] = buf[0];
 

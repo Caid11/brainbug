@@ -10,15 +10,20 @@ use crate::common::*;
 const TEST_RUNNER : &str = "
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <io.h>
 
 extern void bf_main( unsigned char* tape );
 
 int main(int argc, char** argv)
 {
+    // Don't interpret ctrl z as EOF.
+    _setmode(0,_O_BINARY);
+
     unsigned char* tape = calloc(4000000, sizeof(char));
-    bf_main( tape );
+    bf_main( tape + 2000000 );
     free(tape);
-    printf(\"Exited successfully\\n\");
+    fprintf(stderr, \"Exited successfully\\n\");
 }
 ";
 
