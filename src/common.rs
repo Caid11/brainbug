@@ -1,5 +1,6 @@
 use std::fmt;
 
+#[derive(PartialEq, Eq, Clone)]
 pub enum Instruction {
     MoveRight,
     MoveLeft,

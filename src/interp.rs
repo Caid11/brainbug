@@ -133,6 +133,11 @@ impl State {
         let mut pointer_value : i32 = 0;
 
         for pc in 0..self.program.len() {
+            match curr_loop {
+                Option::None => (),
+                Option::Some(ref mut l) => l.insts.push(self.program[pc].clone()),
+            }
+
             match self.program[pc] {
                 Instruction::MoveRight => pointer_offset += 1,
                 Instruction::MoveLeft => pointer_offset -= 1,
@@ -154,7 +159,7 @@ impl State {
 
             match self.program[pc] {
                 Instruction::JumpIfZero => {
-                    curr_loop = Some(LoopExecution{pc, num_times_executed: 0});
+                    curr_loop = Some(LoopExecution{pc, num_times_executed: 0, insts: vec![Instruction::JumpIfZero;1]});
                     has_io = false;
                     pointer_offset = 0;
                     pointer_value = 0;
@@ -207,15 +212,23 @@ impl State {
         let (simple_loops, complex_loops) = self.get_loop_executions();
 
         println!("\nSIMPLE LOOPS");
-        println!("PC\t# EXECUTED");
+        println!("PC\t# EXECUTED\tINSTS");
         for l in simple_loops {
-            println!("{}\t{}", l.pc, l.num_times_executed);
+            print!("{}\t{}\t", l.pc, l.num_times_executed);
+            for i in l.insts {
+                print!("{}", i);
+            }
+            print!("\n");
         }
 
         println!("\nCOMPLEX LOOPS");
-        println!("PC\t# EXECUTED");
+        println!("PC\t# EXECUTED\tINSTS");
         for l in complex_loops {
-            println!("{}\t{}", l.pc, l.num_times_executed);
+            print!("{}\t{}\t", l.pc, l.num_times_executed);
+            for i in l.insts {
+                print!("{}", i);
+            }
+            print!("\n");
         }
     }
 }
@@ -282,6 +295,7 @@ fn compute_jump_dests(insts : &Vec<Instruction>) -> HashMap<usize, usize> {
 struct LoopExecution {
     pc : usize,
     num_times_executed : usize,
+    insts : Vec<Instruction>,
 }
 
 impl Ord for LoopExecution {
