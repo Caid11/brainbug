@@ -19,6 +19,7 @@ int main(int argc, char** argv)
 {
     // Don't interpret ctrl z as EOF.
     _setmode(0,_O_BINARY);
+    _setmode(1,_O_BINARY);
 
     unsigned char* tape = calloc(4000000, sizeof(char));
     bf_main( tape + 2000000 );
