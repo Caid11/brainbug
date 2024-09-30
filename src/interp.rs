@@ -1,5 +1,5 @@
 use core::panic;
-use std::{collections::{HashMap, VecDeque}, io::{self, ErrorKind, Read}, usize};
+use std::{collections::{HashMap, VecDeque}, io::{self, ErrorKind, Read, Write}, usize};
 
 use crate::common::*;
 
@@ -66,8 +66,8 @@ impl State {
     }
 
     fn write(&mut self) {
-        let msg = char::from_u32(self.tape[self.head_pos].into()).unwrap();
-        print!("{}", msg);
+        let buf = [self.tape[self.head_pos];1];
+        io::stdout().write_all(&buf).expect("unable to write buf");
 
         self.program_counter += 1;
     }
