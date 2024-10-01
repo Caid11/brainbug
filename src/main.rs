@@ -72,7 +72,7 @@ fn main() -> ExitCode {
 
         let program = common::lex(&input);
         let mut state = interp::State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         if time {
             println!("\nExecution time: {}", start_time.elapsed().unwrap().as_secs_f64());

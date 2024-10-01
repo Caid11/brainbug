@@ -184,7 +184,7 @@ pub fn run( exe_path : &str ) -> Result<()> {
     }
 }
 
-fn compile_and_run_with_input( input : &str, program_input : &str ) -> Result<Output> {
+fn compile_and_run_with_input( input : &str, program_input : &Vec<u8> ) -> Result<Output> {
     let output_dir = tempfile::Builder::new()
         .keep(false)
         .tempdir().map_err(|e| Box::new(e))?;
@@ -198,8 +198,10 @@ fn compile_and_run_with_input( input : &str, program_input : &str ) -> Result<Ou
     let cmd = Command::new(exe_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn().expect("Error starting BF program.");
-    write!(cmd.stdin.as_ref().unwrap(), "{}", program_input).unwrap();
+    cmd.stdin.as_ref().unwrap().write_all(program_input).unwrap();
+    // write!(cmd.stdin.as_ref().unwrap(), "{}", program_input).unwrap();
     
     let output = cmd.wait_with_output().expect("Error running BF program.");
     return Ok(output);
@@ -208,116 +210,188 @@ fn compile_and_run_with_input( input : &str, program_input : &str ) -> Result<Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::*;
+    use std::io::Read;
 
     #[test]
     fn test_execute_empty() {
-        let run_res = compile_and_run_with_input("", "").unwrap();
+        let mut input = Vec::new();
+        input.write("".as_bytes());
+
+        let run_res = compile_and_run_with_input("", &input).unwrap();
         assert!(run_res.status.success());
 
-        let output = String::from_utf8(run_res.stdout).unwrap();
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_read_write_char() {
-        let run_res = compile_and_run_with_input(",.", "A").unwrap();
+        let mut input = Vec::new();
+        input.write("A".as_bytes());
+
+        let run_res = compile_and_run_with_input(",.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("A").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_increment() {
-        let run_res = compile_and_run_with_input(",+.", "0").unwrap();
+        let mut input = Vec::new();
+        input.write("0".as_bytes());
+
+        let run_res = compile_and_run_with_input(",+.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("1").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_decrement() {
-        let run_res = compile_and_run_with_input(",-.", "1").unwrap();
+        let mut input = Vec::new();
+        input.write("1".as_bytes());
+
+        let run_res = compile_and_run_with_input(",-.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("0").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_move_right() {
-        let run_res = compile_and_run_with_input(",>.", "A").unwrap();
+        let mut input = Vec::new();
+        input.write("A".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("A").is_none());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_move_left() {
-        let run_res = compile_and_run_with_input(",>,<.", "AB").unwrap();
+        let mut input = Vec::new();
+        input.write("AB".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>,<.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("A").is_some());
         assert!(output.find("B").is_none());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_jump_if_zero_take_jump() {
-        let run_res = compile_and_run_with_input(",>[<.>]", "A").unwrap();
+        let mut input = Vec::new();
+        input.write("A".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>[<.>]", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("A").is_none());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_jump_if_zero_dont_take_jump() {
-        let run_res = compile_and_run_with_input(",>+[<.>-]", "A").unwrap();
+        let mut input = Vec::new();
+        input.write("A".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>+[<.>-]", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("A").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_loop() {
-        let run_res = compile_and_run_with_input(",>+++++[<+>-]<.", "0").unwrap();
+        let mut input = Vec::new();
+        input.write("0".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>+++++[<+>-]<.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("5").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_inner_loop() {
-        let run_res = compile_and_run_with_input(",>+++[>++[<<+>>-]<-]<.", "0").unwrap();
+        let mut input = Vec::new();
+        input.write("0".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>+++[>++[<<+>>-]<-]<.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
 
         assert!(output.find("6").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
     }
 
     #[test]
     fn test_execute_multiple_loops() {
-        let run_res = compile_and_run_with_input(",>+++[<+>-]++[<+>-]<.", "0").unwrap();
+        let mut input = Vec::new();
+        input.write("0".as_bytes());
+
+        let run_res = compile_and_run_with_input(",>+++[<+>-]++[<+>-]<.", &input).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("5").is_some());
-        assert!(output.find("Exited successfully").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_bfcheck() {
+        let (progs, outputs, input_path) = get_tests();
+
+        let mut input_file = File::open(input_path).unwrap();
+        let mut input = Vec::new();
+        input_file.read_to_end(&mut input).unwrap();
+
+        for i in 0..progs.len() {
+            let prog_path = progs[i].clone();
+            let output_path = outputs[i].clone();
+
+            let input_prog = std::fs::read_to_string(prog_path.clone()).expect("unable to read file");
+            let mut input = input.clone();
+
+            let run_res = compile_and_run_with_input(&input_prog, &input).unwrap();
+
+            let mut orig_output = Vec::new();
+            let mut output_file = File::open(output_path).unwrap();
+            output_file.read_to_end(&mut orig_output).unwrap();
+
+            println!("{}", prog_path.to_str().unwrap());
+            assert_eq!(run_res.stdout, orig_output);
+        }
     }
 
 }

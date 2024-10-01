@@ -65,17 +65,17 @@ impl State {
         self.program_counter += 1;
     }
 
-    fn write(&mut self) {
+    fn write(&mut self, mut writer : impl Write) {
         let buf = [self.tape[self.head_pos];1];
-        io::stdout().write_all(&buf).expect("unable to write buf");
+        writer.write_all(&buf).expect("unable to write buf");
 
         self.program_counter += 1;
     }
 
-    fn read(&mut self) {
+    fn read(&mut self, mut reader : impl Read) {
         // Read a character from stdin
         let mut buf = [0u8; 1];
-        let read_res = io::stdin().read_exact(&mut buf);
+        let read_res = reader.read_exact(&mut buf);
         match read_res {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => buf[0] = 255,
@@ -107,7 +107,7 @@ impl State {
         }
     }
 
-    pub fn interp(&mut self)
+    pub fn interp(&mut self, mut reader : impl Read, mut writer : impl Write)
     {
         loop {
             if self.program_counter >= self.program.len() {
@@ -121,8 +121,8 @@ impl State {
                 Instruction::MoveLeft => self.move_left(),
                 Instruction::Increment => self.increment(),
                 Instruction::Decrement => self.decrement(),
-                Instruction::Write => self.write(),
-                Instruction::Read => self.read(),
+                Instruction::Write => self.write(&mut writer),
+                Instruction::Read => self.read(&mut reader),
                 Instruction::JumpIfZero => self.jump_if_zero(),
                 Instruction::JumpUnlessZero => self.jump_unless_zero(),
             }
@@ -325,12 +325,13 @@ impl PartialEq for LoopExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::*;
 
     #[test]
     fn test_move_right() {
         let program = lex(">");
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.head_pos, 1);
         assert_eq!(state.tape.len(), 2);
@@ -341,7 +342,7 @@ mod tests {
         let move_amt = 16;
         let program = lex(&(0..move_amt).map(|_| ">").collect::<String>());
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.head_pos, move_amt);
         assert_eq!(state.tape.len(), (move_amt + 1).try_into().unwrap());
@@ -351,7 +352,7 @@ mod tests {
     fn test_move_left() {
         let program = lex("><");
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.head_pos, 0);
     }
@@ -360,7 +361,7 @@ mod tests {
     fn test_move_left_negative() {
         let program = lex("<+");
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.head_pos, 0);
         assert_eq!(state.tape.len(), 2);
@@ -372,7 +373,7 @@ mod tests {
     fn test_increment() {
         let program = lex("+");
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[0], 1);
     }
@@ -381,7 +382,7 @@ mod tests {
     fn test_decrement() {
         let program = lex("-");
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[0], u8::MAX);
     }
@@ -392,7 +393,7 @@ mod tests {
         let program = lex("[+]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[0], 0);
     }
@@ -403,7 +404,7 @@ mod tests {
         let program = lex("+[>[>+]>>>]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[0], 1);
         assert_eq!(state.tape[1], 0);
@@ -414,7 +415,7 @@ mod tests {
         let program = lex("+[>++>]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[0], 1);
         assert_eq!(state.tape[1], 2);
@@ -426,7 +427,7 @@ mod tests {
         let program = lex("+++++[>+<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[0], 0);
         assert_eq!(state.tape[1], 5);
@@ -437,7 +438,7 @@ mod tests {
         let program = lex("+++++[>++++++++++[>+<-]<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.tape[2], 50);
     }
@@ -447,7 +448,7 @@ mod tests {
         let program = lex("+++++[>+<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
 
         assert_eq!(state.execution_counter[0], 1);
         assert_eq!(state.execution_counter[1], 1);
@@ -467,7 +468,7 @@ mod tests {
         let program = lex("+++++");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 0);
@@ -479,7 +480,7 @@ mod tests {
         let program = lex(">+++[>+++<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 1);
@@ -494,7 +495,7 @@ mod tests {
         let program = lex("+++>[>+++<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 1);
@@ -509,7 +510,7 @@ mod tests {
         let program = lex(">+++[>.+++<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 0);
@@ -524,7 +525,7 @@ mod tests {
         let program = lex(">+++[>]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 0);
@@ -539,7 +540,7 @@ mod tests {
         let program = lex(">++++[>+<--]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 0);
@@ -554,7 +555,7 @@ mod tests {
         let program = lex(">+++[>+++++[>++<-]<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 1);
@@ -569,7 +570,7 @@ mod tests {
         let program = lex(">+++[>++++++[>++<--]<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 0);
@@ -584,7 +585,7 @@ mod tests {
         let program = lex("+++[>--<-]++[>--<-]++++[>--<-]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 3);
@@ -603,7 +604,7 @@ mod tests {
         let program = lex("++++[>--<--]++[>--<--]++++++[>--<--]");
 
         let mut state = State::new(program);
-        state.interp();
+        state.interp(std::io::stdin(), std::io::stdout());
         
         let (simple_loops, complex_loops) = state.get_loop_executions();
         assert_eq!(simple_loops.len(), 0);
@@ -616,4 +617,34 @@ mod tests {
         assert_eq!(complex_loops[2].pc, 14);
         assert_eq!(complex_loops[2].num_times_executed, 1);
     }
+
+    #[test]
+    #[ignore]
+    fn test_bfcheck() {
+        let (progs, outputs, input_path) = get_tests();
+
+        let mut input_file = File::open(input_path).unwrap();
+        let mut input = Vec::new();
+        input_file.read_to_end(&mut input).unwrap();
+
+        for i in 0..progs.len() {
+            let prog_path = progs[i].clone();
+            let output_path = outputs[i].clone();
+
+            let input_prog = lex(&std::fs::read_to_string(prog_path.clone()).expect("unable to read file"));
+            let mut output = Vec::new();
+            let mut input = input.clone();
+
+            let mut state = State::new(input_prog);
+            state.interp(&input[..], output.by_ref());
+
+            let mut orig_output = Vec::new();
+            let mut output_file = File::open(output_path).unwrap();
+            output_file.read_to_end(&mut orig_output).unwrap();
+
+            println!("{}", prog_path.to_str().unwrap());
+            assert_eq!(output, orig_output);
+        }
+    }
+
 }
