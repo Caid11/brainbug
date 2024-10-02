@@ -3,7 +3,7 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::fs;
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Instruction {
     MoveRight,
     MoveLeft,
@@ -12,7 +12,14 @@ pub enum Instruction {
     Write,
     Read,
     JumpIfZero,
-    JumpUnlessZero
+    JumpUnlessZero,
+    Zero,
+
+    // Add or subtract the contents at the current cell to the cell at the given offset.
+    Add(i32), 
+    Sub(i32), 
+
+    Nop
 }
 
 impl fmt::Display for Instruction {
@@ -26,7 +33,17 @@ impl fmt::Display for Instruction {
             Instruction::Read => write!(f, ","),
             Instruction::JumpIfZero => write!(f, "["),
             Instruction::JumpUnlessZero => write!(f, "]"),
+            Instruction::Add(offset) => write!(f, "ADD({offset})"),
+            Instruction::Sub(offset) => write!(f, "SUB({offset})"),
+            Instruction::Nop => write!(f, "NOP"),
+            Instruction::Zero => write!(f, "ZERO")
         }
+    }
+}
+
+impl fmt::Debug for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self)
     }
 }
 

@@ -1,9 +1,11 @@
 use tempfile::{tempfile, NamedTempFile};
+use core::panic;
 use std::error;
 use std::io::{Write};
 use std::fs::{File};
 use std::process::{Command, Stdio, Output};
 use std::fmt;
+use std::collections::HashMap;
 
 use crate::common::*;
 
@@ -89,7 +91,131 @@ const MOVE_LEFT : &str = "
     decq %r12
 ";
 
-pub fn compile_to_asm( input : &Vec<Instruction> ) -> String {
+const ZERO : &str = "
+    movb $0, (%r12)
+";
+
+struct LoopState {
+    start_pc : usize,
+    
+    head_delta : i32,
+    ptr_changes : HashMap<i32, i32>
+}
+
+fn simplify_loops( program : &mut Vec<Instruction>) {
+    let mut in_loop = false;
+    let mut curr_loop = LoopState {
+        start_pc: 0,
+        head_delta: 0,
+        ptr_changes: HashMap::new()
+    };
+
+    for pc in 0..program.len() {
+        let inst = program[pc];
+
+        match inst {
+            Instruction::JumpIfZero => {
+                curr_loop = LoopState {
+                    start_pc: pc,
+                    head_delta: 0,
+                    ptr_changes: HashMap::new()
+                };
+
+                in_loop = true;
+            },
+
+            Instruction::JumpUnlessZero => {
+                if in_loop {
+                    in_loop = false;
+
+                    if curr_loop.head_delta != 0 {
+                        continue;
+                    }
+
+                    if !curr_loop.ptr_changes.contains_key(&0) 
+                        || (curr_loop.ptr_changes[&0] != 1  && curr_loop.ptr_changes[&0] != -1) {
+                        continue;
+                    }
+
+                    let decrement_loop = curr_loop.ptr_changes[&0] == -1;
+
+                    for i in curr_loop.start_pc..(pc + 1) {
+                        program[i] = Instruction::Nop;
+                    }
+
+                    let mut write_pc = curr_loop.start_pc;
+
+                    let mut head_deltas : Vec<&i32> = curr_loop.ptr_changes.keys().collect();
+                    head_deltas.sort();
+
+                    for head_delta in head_deltas {
+                        if *head_delta == 0 {
+                            continue;
+                        }
+
+                        let value_delta = curr_loop.ptr_changes[head_delta];
+
+                        for i in 0..(value_delta).abs() {
+                            if decrement_loop {
+                                if value_delta > 0 {
+                                    program[write_pc] = Instruction::Add(head_delta.clone());
+                                }
+                                else if value_delta < 0 {
+                                    program[write_pc] = Instruction::Sub(head_delta.clone());
+                                }
+                            } else {
+                                if value_delta > 0 {
+                                    program[write_pc] = Instruction::Sub(head_delta.clone());
+                                } else if value_delta < 0 {
+                                    program[write_pc] = Instruction::Add(head_delta.clone());
+                                }
+                            }
+                            write_pc += 1;
+                        }
+                    }
+
+                    program[write_pc] = Instruction::Zero;
+                }
+            }
+
+            Instruction::Read | Instruction::Write => in_loop = false,
+
+            Instruction::MoveLeft => {
+                if in_loop {
+                    curr_loop.head_delta -= 1;
+                }
+            },
+
+            Instruction::MoveRight => {
+                if in_loop {
+                    curr_loop.head_delta += 1;
+                }
+            },
+
+            Instruction::Increment => {
+                if in_loop {
+                    let curr = curr_loop.ptr_changes.entry(curr_loop.head_delta).or_insert(0);
+                    *curr += 1;
+                }
+            }
+
+            Instruction::Decrement => {
+                if in_loop {
+                    let curr = curr_loop.ptr_changes.entry(curr_loop.head_delta).or_insert(0);
+                    *curr -= 1;
+                }
+            }
+
+            _ => in_loop = false,
+            }
+        }
+}
+
+pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool ) -> String {
+    if do_simplify_loops {
+        simplify_loops(input);
+    }
+
     let mut program = FUNC_BEGIN.to_owned();
 
     let mut curr_label_num = 0;
@@ -131,7 +257,23 @@ pub fn compile_to_asm( input : &Vec<Instruction> ) -> String {
 
                 // Generate a label so corresponding jump if zero can jump back.
                 program += &(".UZ".to_owned() + &label_num.to_string() + ":\n");
-            }
+            },
+
+            Instruction::Zero => program += ZERO,
+
+            Instruction::Add(offset) => {
+                program += "\tmovzbl (%r12), %eax\n";
+                program += &format!("\taddb %al, {offset}(%r12)\n");
+            },
+
+            Instruction::Sub(offset) => {
+                program += "\tmovzbl (%r12), %eax\n";
+                program += &format!("\tsubb %al, {offset}(%r12)\n");
+            },
+
+            Instruction::Nop => (),
+
+            _ => panic!("unhandled instruction: {}", inst)
         }
     }
 
@@ -184,13 +326,12 @@ pub fn run( exe_path : &str ) -> Result<()> {
     }
 }
 
-fn compile_and_run_with_input( input : &str, program_input : &Vec<u8> ) -> Result<Output> {
+fn compile_and_run_with_input( program : &mut Vec<Instruction>, program_input : &Vec<u8>, do_simplify_loops : bool ) -> Result<Output> {
     let output_dir = tempfile::Builder::new()
         .keep(false)
         .tempdir().map_err(|e| Box::new(e))?;
 
-    let program = lex(&input);
-    let asm = compile_to_asm(&program);
+    let asm = compile_to_asm(program, do_simplify_loops);
 
     let exe_path = output_dir.path().join("bf.exe");
     compile_to_exe(&asm, exe_path.to_str().unwrap()).expect("failed to compile program");
@@ -218,7 +359,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("".as_bytes());
 
-        let run_res = compile_and_run_with_input("", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(""), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let err_output = String::from_utf8(run_res.stderr).unwrap();
@@ -230,7 +371,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(",.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -244,7 +385,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(",+.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",+."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -258,7 +399,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("1".as_bytes());
 
-        let run_res = compile_and_run_with_input(",-.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",-."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -272,7 +413,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -286,7 +427,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("AB".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>,<.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>,<."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -301,7 +442,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>[<.>]", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>[<.>]"), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -315,7 +456,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>+[<.>-]", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+[<.>-]"), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -329,7 +470,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>+++++[<+>-]<.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+++++[<+>-]<."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -343,7 +484,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>+++[>++[<<+>>-]<-]<.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+++[>++[<<+>>-]<-]<."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -358,11 +499,282 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(",>+++[<+>-]++[<+>-]<.", &input).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+++[<+>-]++[<+>-]<."), &input, true).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
         assert!(output.find("5").is_some());
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_decrement_loop_to_zero() {
+        let mut prog = lex("[-]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [Instruction::Zero, Instruction::Nop, Instruction::Nop]);
+    }
+
+    #[test]
+    fn test_execute_decrement_loop_to_zero() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("++++++[-].");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 0);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_increment_loop_to_zero() {
+        let mut prog = lex("[+]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [Instruction::Zero, Instruction::Nop, Instruction::Nop]);
+    }
+
+    #[test]
+    fn test_execute_increment_loop_to_zero() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("++++++[+].");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 0);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_decrement_loop_add_1() {
+        let mut prog = lex("[->+<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Add(1),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
+    fn test_execute_decrement_loop_add_1() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("++++++[->+<]>.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 6);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_decrement_loop_sub_1() {
+        let mut prog = lex("[->-<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Sub(1),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
+    fn test_execute_decrement_loop_sub_1() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("++++++[->-<]>.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 250);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_increment_loop_add_1() {
+        let mut prog = lex("[+>+<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Sub(1),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
+    fn test_increment_loop_add_1_write() {
+        let mut prog = lex("[+>+>.<<]");
+        let prog_orig = prog.clone();
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, prog_orig);
+    }
+
+    #[test]
+    fn test_increment_loop_add_1_read() {
+        let mut prog = lex("[+>+>,<<]");
+        let prog_orig = prog.clone();
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, prog_orig);
+    }
+
+    #[test]
+    fn test_increment_loop_sub_1() {
+        let mut prog = lex("[+>-<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Add(1),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
+    fn test_decrement_loop_add_sub() {
+        let mut prog = lex("[->>+++>>>>>-+---<++<<<<<<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Add(2),
+            Instruction::Add(2),
+            Instruction::Add(2),
+            Instruction::Add(6),
+            Instruction::Add(6),
+            Instruction::Sub(7),
+            Instruction::Sub(7),
+            Instruction::Sub(7),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
+    fn test_increment_loop_add_sub() {
+        let mut prog = lex("[+>>+++>>>>>-+---<++<<<<<<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Sub(2),
+            Instruction::Sub(2),
+            Instruction::Sub(2),
+            Instruction::Sub(6),
+            Instruction::Sub(6),
+            Instruction::Add(7),
+            Instruction::Add(7),
+            Instruction::Add(7),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
+    fn test_decrement_loop_nested_add_1() {
+        let mut prog = lex("++[->+++[->+<]<]");
+        simplify_loops(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Increment,
+            Instruction::Increment,
+            Instruction::JumpIfZero,
+            Instruction::Decrement,
+            Instruction::MoveRight,
+            Instruction::Increment,
+            Instruction::Increment,
+            Instruction::Increment,
+            Instruction::Add(1),
+            Instruction::Zero,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::MoveLeft,
+            Instruction::JumpUnlessZero
+        ]);
+    }
+
+    #[test]
+    fn test_execute_decrement_loop_nested_add_1() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("++[->+++[->+<]<]>>.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 6);
         let err_output = String::from_utf8(run_res.stderr).unwrap();
         assert!(err_output.find("Exited successfully").is_some());
     }
@@ -383,7 +795,8 @@ mod tests {
             let input_prog = std::fs::read_to_string(prog_path.clone()).expect("unable to read file");
             let mut input = input.clone();
 
-            let run_res = compile_and_run_with_input(&input_prog, &input).unwrap();
+            let run_res = compile_and_run_with_input(&mut lex(&input_prog), &input, true).unwrap();
+            assert!(run_res.status.success());
 
             let mut orig_output = Vec::new();
             let mut output_file = File::open(output_path).unwrap();
@@ -391,6 +804,9 @@ mod tests {
 
             println!("{}", prog_path.to_str().unwrap());
             assert_eq!(run_res.stdout, orig_output);
+
+            let err_output = String::from_utf8(run_res.stderr).unwrap();
+            assert!(err_output.find("Exited successfully").is_some());
         }
     }
 

@@ -125,6 +125,7 @@ impl State {
                 Instruction::Read => self.read(&mut reader),
                 Instruction::JumpIfZero => self.jump_if_zero(),
                 Instruction::JumpUnlessZero => self.jump_unless_zero(),
+                _ => panic!("unhandled instruction: {}", self.program[self.program_counter])
             }
         }
     }
