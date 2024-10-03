@@ -19,6 +19,9 @@ pub enum Instruction {
     Add(i32), 
     Sub(i32), 
 
+    // Scan the given loop, jumping write by 2^x
+    Scan(i32),
+
     Nop
 }
 
@@ -35,6 +38,7 @@ impl fmt::Display for Instruction {
             Instruction::JumpUnlessZero => write!(f, "]"),
             Instruction::Add(offset) => write!(f, "ADD({offset})"),
             Instruction::Sub(offset) => write!(f, "SUB({offset})"),
+            Instruction::Scan(x) => write!(f, "SCAN({x})"),
             Instruction::Nop => write!(f, "NOP"),
             Instruction::Zero => write!(f, "ZERO")
         }

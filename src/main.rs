@@ -83,7 +83,7 @@ fn main() -> ExitCode {
         }
     } else if mode == "compile" {
         let mut program = common::lex(&input);
-        let compiled_asm = compile::compile_to_asm(&mut program, true);
+        let compiled_asm = compile::compile_to_asm(&mut program, true, true);
 
         let input_filepath = Path::new(file_path);
 
