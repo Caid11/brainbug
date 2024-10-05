@@ -19,7 +19,7 @@ pub enum Instruction {
     Add(i32), 
     Sub(i32), 
 
-    // Scan the given loop, jumping write by 2^x
+    // Scan until the head reaches a cell containing 0, moving the head by the specified number of cells each iteration
     Scan(i32),
 
     Nop

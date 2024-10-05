@@ -5,7 +5,7 @@ use std::io::{Write};
 use std::fs::{File};
 use std::process::{Command, Stdio, Output};
 use std::fmt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::common::*;
 
@@ -43,18 +43,6 @@ const FUNC_BEGIN : &str = "
 	.type	32;
 	.endef
 
-	.globl	__ymm@0000000600000007000000040000000500000002000000030000000000000001 # -- Begin function bf_main
-	.section	.rdata,\"dr\",discard,__ymm@0000000600000007000000040000000500000002000000030000000000000001
-	.p2align	5, 0x0
-__ymm@0000000600000007000000040000000500000002000000030000000000000001:
-	.long	1                               # 0x1
-	.long	0                               # 0x0
-	.long	3                               # 0x3
-	.long	2                               # 0x2
-	.long	5                               # 0x5
-	.long	4                               # 0x4
-	.long	7                               # 0x7
-	.long	6                               # 0x6
 	.globl	__ymm@ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00
 	.section	.rdata,\"dr\",discard,__ymm@ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00
 	.p2align	5, 0x0
@@ -91,6 +79,7 @@ __ymm@ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00ffffff00:
 	.byte	255                             # 0xff
 	.byte	255                             # 0xff
 	.byte	255                             # 0xff
+
 	.globl	__real@ffffff00
 	.section	.rdata,\"dr\",discard,__real@ffffff00
 	.p2align	2, 0x0
@@ -99,8 +88,10 @@ __real@ffffff00:
 	.byte	255                             # 0xff
 	.byte	255                             # 0xff
 	.byte	255                             # 0xff
-	.text
+";
 
+const FUNC_PROLOGUE : &str = "
+	.text
 	.globl	bf_main
 	.p2align	4, 0x90
 bf_main:
@@ -270,7 +261,7 @@ fn simplify_loops( program : &mut Vec<Instruction>) {
         }
 }
 
-fn simplify_scans( program : &mut Vec<Instruction>) {
+fn vectorize_scans( program : &mut Vec<Instruction>) {
     let mut in_loop = false;
     let mut head_delta : i32  = 0;
     let mut start_pc : usize = 0;
@@ -289,8 +280,8 @@ fn simplify_scans( program : &mut Vec<Instruction>) {
                 if in_loop {
                     in_loop = false;
 
-                    // TODO(Kincaid): Eventually handle power of twos
-                    if head_delta != 1 && head_delta != 2 {
+                    // TODO(Kincaid): Eventually handle left scans
+                    if head_delta < 1 {
                         continue;
                     }
 
@@ -298,8 +289,7 @@ fn simplify_scans( program : &mut Vec<Instruction>) {
                         program[i] = Instruction::Nop;
                     }
 
-                    let scan_power = head_delta.ilog2();
-                    program[start_pc] = Instruction::Scan(scan_power.try_into().unwrap());
+                    program[start_pc] = Instruction::Scan(head_delta);
                 }
             }
 
@@ -326,158 +316,115 @@ pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool, 
     }
 
     if do_simplify_scans {
-        simplify_scans(input);
+        vectorize_scans(input);
     }
 
-    let mut program = FUNC_BEGIN.to_owned();
+    let mut globals : String = "".to_owned();
+    let mut instructions = "".to_owned();
 
     let mut curr_label_num = 0;
     let mut label_stack = vec![0;0];
 
+    let mut generated_indices : HashSet<i32> = HashSet::new();
+
     for inst in input {
         match inst {
-            Instruction::MoveRight => program += MOVE_RIGHT,
-            Instruction::MoveLeft => program += MOVE_LEFT,
-            Instruction::Increment => program += INCREMENT,
-            Instruction::Decrement => program += DECREMENT,
-            Instruction::Read => program += READ_CHAR,
-            Instruction::Write => program += WRITE_CHAR,
+            Instruction::MoveRight => instructions += MOVE_RIGHT,
+            Instruction::MoveLeft => instructions += MOVE_LEFT,
+            Instruction::Increment => instructions += INCREMENT,
+            Instruction::Decrement => instructions += DECREMENT,
+            Instruction::Read => instructions += READ_CHAR,
+            Instruction::Write => instructions += WRITE_CHAR,
 
             Instruction::JumpIfZero => {
                 let new_label_num = curr_label_num;
                 curr_label_num += 1;
                 label_stack.push(new_label_num);
 
-                program += "\n";
+                instructions += "\n";
 
                 // Generate a jump to the end label.
-                program += "\tcmpb $0, (%r12)\n";
-                program += &("\tje .UZ".to_owned() + &new_label_num.to_string() + "\n");
+                instructions += "\tcmpb $0, (%r12)\n";
+                instructions += &("\tje .UZ".to_owned() + &new_label_num.to_string() + "\n");
 
                 // Generate a label so corresponding jump unless zero can jump back.
-                program += &(".IZ".to_owned() + &new_label_num.to_string() + ":\n");
+                instructions += &(".IZ".to_owned() + &new_label_num.to_string() + ":\n");
             },
 
             Instruction::JumpUnlessZero => {
-                program += "\n";
+                instructions += "\n";
 
                 // Get the current brace from the stack.
                 let label_num = label_stack.pop().unwrap();
 
                 // Generate a jump to the start label.
-                program += "\tcmpb $0, (%r12)\n";
-                program += &("\tjne .IZ".to_owned() + &label_num.to_string() + "\n");
+                instructions += "\tcmpb $0, (%r12)\n";
+                instructions += &("\tjne .IZ".to_owned() + &label_num.to_string() + "\n");
 
                 // Generate a label so corresponding jump if zero can jump back.
-                program += &(".UZ".to_owned() + &label_num.to_string() + ":\n");
+                instructions += &(".UZ".to_owned() + &label_num.to_string() + ":\n");
             },
 
-            Instruction::Zero => program += ZERO,
+            Instruction::Zero => instructions += ZERO,
 
             Instruction::Add(offset) => {
-                program += "\tmovzbl (%r12), %eax\n";
-                program += &format!("\taddb %al, {offset}(%r12)\n");
+                instructions += "\tmovzbl (%r12), %eax\n";
+                instructions += &format!("\taddb %al, {offset}(%r12)\n");
             },
 
             Instruction::Sub(offset) => {
-                program += "\tmovzbl (%r12), %eax\n";
-                program += &format!("\tsubb %al, {offset}(%r12)\n");
+                instructions += "\tmovzbl (%r12), %eax\n";
+                instructions += &format!("\tsubb %al, {offset}(%r12)\n");
             },
 
             Instruction::Scan(x) => {
-                if *x != 0 && *x != 1 {
-                    panic!("scan power not handled: {x}");
-                }
-
                 // Generate label names.
                 let label_num = curr_label_num;
                 curr_label_num += 1;
 
-                let start_label = ".SS".to_owned() + &label_num.to_string();
-                let end_label = ".SE".to_owned() + &label_num.to_string();
+                let loop_label = ".SCAN".to_owned() + &label_num.to_string();
 
-                program += "\tmovdqu	(%r12), %xmm1\n";
-                program += "\tpxor	%xmm0, %xmm0\n";
-                program += "\tpcmpeqb	%xmm0, %xmm1\n";
-                program += "\tpmovmskb	%xmm1, %ecx\n";
+                // Generate indices for scan.
 
-                if *x == 1 {
-                    program += "\tandl	$21845, %ecx\n";
-                } else {
-                    program += "\ttestl	%ecx, %ecx\n";
+                let global_name = "_ymm@indices".to_owned() + &x.to_string();
+
+                if !generated_indices.contains(x) {
+                    globals += &("\t.globl\t".to_owned() + &global_name + "\n");
+                    globals += &("\t.section	.rdata,\"dr\",discard,".to_owned() + &global_name + "\n");
+                    globals += &("\t.p2align	5, 0x0\n");
+                    globals += &(global_name.to_owned() + ":\n");
+                    for i in 0..8 {
+                        globals += &("\t.long\t".to_owned() + &((i * *x).to_string()) + "\n");
+                    }
+
+                    generated_indices.insert(*x);
                 }
 
-                program += &("\tjne	".to_owned() + &end_label + "\n");
-                program += "\t.p2align	4, 0x90\n";
-                program += &(start_label.clone() + ":\n");
-                program += "\tmovdqu	8(%r12), %xmm1\n";
-                program += "\taddq	$8, %r12\n";
-                program += "\tpcmpeqb	%xmm0, %xmm1\n";
-                program += "\tpmovmskb	%xmm1, %ecx\n";
+                let bytes_per_iter = 8 * *x;
 
-                if *x == 1 {
-                    program += "\tandl	$21845, %ecx\n";
-                } else {
-                    program += "\ttestl	%ecx, %ecx\n";
-                }
-
-                program += &("\tje	".to_owned() + &start_label + "\n");
-                program += &(end_label + ":\n");
-                program += "\trep		bsfl	%ecx, %ecx\n";
-                program += "\taddq	%rcx, %r12\n";
-
-                // program += "	movq	(%rcx), %rax\n";
-                // program += "	vmovdqa	__ymm@0000000600000007000000040000000500000002000000030000000000000001(%rip), %ymm0 # ymm0 = [1,0,3,2,5,4,7,6]\n";
-                // program += "	vpxor	%xmm1, %xmm1, %xmm1\n";
-                // program += "	vpbroadcastd	__real@ffffff00(%rip), %ymm2 # ymm2 = [0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255]\n";
-                // program += "	movl	$8, %edx\n";
-                // program += "	.p2align	4, 0x90\n";
-                // program += ".LBB0_1:                                # =>This Inner Loop Header: Depth=1\n";
-                // program += "	vpcmpeqd	%ymm3, %ymm3, %ymm3\n";
-                // program += "	vpxor	%xmm4, %xmm4, %xmm4\n";
-                // program += "	vpgatherdd	%ymm3, (%rax,%ymm0), %ymm4\n";
-                // program += "	vpor	%ymm2, %ymm4, %ymm3\n";
-                // program += "	vpcmpeqb	%ymm1, %ymm3, %ymm3\n";
-                // program += "	vpmovmskb	%ymm3, %r8d\n";
-                // program += "	tzcntl	%r8d, %r9d\n";
-                // program += "	shrl	$2, %r9d\n";
-                // program += "	incl	%r9d\n";
-                // program += "	testl	%r8d, %r8d\n";
-                // program += "	cmovel	%edx, %r9d\n";
-                // program += "	addq	%rax, %r9\n";
-                // program += "	addq	$8, %rax\n";
-                // program += "	movq	%r9, (%rcx)\n";
-                // program += "	testl	%r8d, %r8d\n";
-                // program += "	je	.LBB0_1\n";
-                // program += "# %bb.2:\n";
-                // program += "	vzeroupper\n";
-
-                //program += "	movq	%r12, %rax\n";
-                //program += "	vmovdqa	__ymm@0000000600000007000000040000000500000002000000030000000000000001(%rip), %ymm0 # ymm0 = [1,0,3,2,5,4,7,6]\n";
-                //program += "	vpxor	%xmm1, %xmm1, %xmm1\n";
-                //program += "	vpbroadcastd	__real@ffffff00(%rip), %ymm2 # ymm2 = [0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255,0,255,255,255]\n";
-                //program += "	movl	$8, %ecx\n";
-                //program += "	.p2align	4, 0x90\n";
-                //program += ".LBB0_1:                                # =>This Inner Loop Header: Depth=1\n";
-                //program += "	vpxor	%xmm3, %xmm3, %xmm3\n";
-                //program += "	vpcmpeqd	%ymm4, %ymm4, %ymm4\n";
-                //program += "	vpgatherdd	%ymm4, (%rax,%ymm0), %ymm3\n";
-                //program += "	vpor	%ymm2, %ymm3, %ymm3\n";
-                //program += "	vpcmpeqb	%ymm1, %ymm3, %ymm3\n";
-                //program += "	vpmovmskb	%ymm3, %edx\n";
-                //program += "	movl	%edx, %r8d\n";
-                //program += "	notl	%r8d\n";
-                //program += "	andl	$286331153, %r8d                # imm = 0x11111111\n";
-                //program += "	popcntl	%r8d, %r8d\n";
-                //program += "	testl	%edx, %edx\n";
-                //program += "	cmovel	%ecx, %r8d\n";
-                //program += "	addq	%rax, %r8\n";
-                //program += "	addq	$8, %rax\n";
-                //program += "	movq	%r8, %r12\n";
-                //program += "	testl	%edx, %edx\n";
-                //program += "	je	.LBB0_1\n";
-                //program += "# %bb.2:\n";
-                //program += "	vzeroupper\n";
+                instructions += "	movq	%r12, %rax\n";
+                instructions += &("	vmovdqa	".to_owned() + &global_name + "(%rip), %ymm0\n");
+                instructions += "	vpxor	%xmm1, %xmm1, %xmm1\n";
+                instructions += "	vpbroadcastd	__real@ffffff00(%rip), %ymm2\n";
+                instructions += &("	movl	$".to_owned() + &bytes_per_iter.to_string() + ", %edx\n");
+                instructions += "	.p2align	4, 0x90\n";
+                instructions += &(loop_label.to_owned() + ":                                # =>This Inner Loop Header: Depth=1\n");
+                instructions += "	vpcmpeqd	%ymm3, %ymm3, %ymm3\n";
+                instructions += "	vpxor	%xmm4, %xmm4, %xmm4\n";
+                instructions += "	vpgatherdd	%ymm3, (%rax,%ymm0), %ymm4\n";
+                instructions += "	vpor	%ymm2, %ymm4, %ymm3\n";
+                instructions += "	vpcmpeqb	%ymm1, %ymm3, %ymm3\n";
+                instructions += "	vpmovmskb	%ymm3, %r8d\n";
+                instructions += "	tzcntl	%r8d, %r9d\n";
+                instructions += "	shrl	$2, %r9d\n";
+	            instructions += &("	imull	$".to_owned() + &x.to_string() + ", %r9d, %r9d\n");
+                instructions += "	addq	%rax, %r9\n";
+                instructions += &("	addq	$".to_owned() + &bytes_per_iter.to_string() + ", %rax\n");
+                instructions += "	movq	%r9, %r12\n";
+                instructions += "	testl	%r8d, %r8d\n";
+                instructions += &("	je	".to_owned() + &loop_label + "\n");
+                instructions += "# %bb.2:\n";
+                instructions += "	vzeroupper\n";
             }
 
             Instruction::Nop => (),
@@ -486,8 +433,8 @@ pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool, 
         }
     }
 
-    program += FUNC_END;
-    return program.to_string();
+    let program = FUNC_BEGIN.to_owned() + &globals + FUNC_PROLOGUE + &instructions + FUNC_END;
+    return program;
 }
 
 pub fn compile_to_exe( asm : &str, output_path : &str ) -> Result<()> {
@@ -563,6 +510,7 @@ mod tests {
     use super::*;
     use std::fs::*;
     use std::io::Read;
+    use rand::*;
 
     #[test]
     fn test_execute_empty() {
@@ -992,10 +940,10 @@ mod tests {
     #[test]
     fn test_scan_loop() {
         let mut prog = lex("[>]");
-        simplify_scans(&mut prog);
+        vectorize_scans(&mut prog);
 
         assert_eq!(prog, [
-            Instruction::Scan(0),
+            Instruction::Scan(1),
             Instruction::Nop,
             Instruction::Nop,
         ]);
@@ -1004,10 +952,10 @@ mod tests {
     #[test]
     fn test_scan_loop_2() {
         let mut prog = lex("[>>]");
-        simplify_scans(&mut prog);
+        vectorize_scans(&mut prog);
 
         assert_eq!(prog, [
-            Instruction::Scan(1),
+            Instruction::Scan(2),
             Instruction::Nop,
             Instruction::Nop,
             Instruction::Nop,
@@ -1047,16 +995,94 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_scan_loop_random() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+
+        let num_tests = 10;
+        let num_cells = 10;
+        let max_scan = 3;
+
+        for _ in 0..num_tests {
+            let mut input_prog = Vec::new();
+
+            // Select a random cell to hold cell
+            let rand_cell_dist = rand::distributions::Uniform::new(0, num_cells);
+            let cell_idx = rng.sample(rand_cell_dist);
+
+            // Generate a random input number for each cell.
+            let scan_dist_cells = rand::distributions::Uniform::new(1, 255);
+            for cell in 0..num_cells {
+                if cell != cell_idx {
+                    let cell_value = rng.sample(scan_dist_cells);
+                    for j in 0..cell_value {
+                        input_prog.push("+");
+                    }
+                }
+
+                input_prog.push(">");
+            }
+
+            // Reset head
+            for i in 0..num_cells {
+                input_prog.push("<");
+            }
+
+            // Generate scan loop
+            // TODO(Kincaid): Add support for negative head deltas
+            let scan_dist = rand::distributions::Uniform::new(0, max_scan);
+            let mut scan_num_skipped = rng.sample(scan_dist);
+            if scan_num_skipped == 0 {
+                scan_num_skipped += 1;
+            }
+            input_prog.push("[");
+            for _ in 0..scan_num_skipped {
+                input_prog.push(">");
+            }
+            input_prog.push("]>.");
+
+            let mut prog = lex(&(input_prog.join("")));
+            //println!("{}", input.join(""));
+            //assert!(false);
+
+            let mut input = Vec::new();
+            
+            // Execute without vectorizing scans
+            let no_vec_run_res = compile_and_run_with_input(&mut prog, &input, false, false).unwrap();
+            assert!(no_vec_run_res.status.success());
+
+            let no_vec_output = no_vec_run_res.stdout;
+            assert_eq!(no_vec_output.len(), 1);
+            let no_vec_res = no_vec_output[0];
+
+            let no_vec_err_output = String::from_utf8(no_vec_run_res.stderr).unwrap();
+            assert!(no_vec_err_output.find("Exited successfully").is_some());
+
+            // Execute with vectorized scans
+            let with_vec_run_res = compile_and_run_with_input(&mut prog, &input, false, true).unwrap();
+            assert!(with_vec_run_res.status.success());
+
+            let with_vec_output = with_vec_run_res.stdout;
+            assert_eq!(with_vec_output.len(), 1);
+            let with_vec_res = with_vec_output[0];
+
+            let with_vec_err_output = String::from_utf8(with_vec_run_res.stderr).unwrap();
+            assert!(with_vec_err_output.find("Exited successfully").is_some());
+
+            assert_eq!(with_vec_res, no_vec_res);
+        }
+    }
+
+    #[test]
     fn test_scan_loop_non_power_2() {
         let mut prog = lex("[>>>]");
-        simplify_scans(&mut prog);
+        vectorize_scans(&mut prog);
 
         assert_eq!(prog, [
-            Instruction::JumpIfZero,
-            Instruction::MoveRight,
-            Instruction::MoveRight,
-            Instruction::MoveRight,
-            Instruction::JumpUnlessZero,
+            Instruction::Scan(3),
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
+            Instruction::Nop,
         ]);
     }
 
