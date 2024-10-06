@@ -280,8 +280,12 @@ fn vectorize_scans( program : &mut Vec<Instruction>) {
                 if in_loop {
                     in_loop = false;
 
-                    // TODO(Kincaid): Eventually handle left scans
-                    if head_delta < 1 {
+                    // // TODO(Kincaid): Eventually handle left scans
+                    // if head_delta < 1 {
+                    //     continue;
+                    // }
+
+                    if head_delta == 0 {
                         continue;
                     }
 
@@ -386,45 +390,92 @@ pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool, 
 
                 // Generate indices for scan.
 
-                let global_name = "_ymm@indices".to_owned() + &x.to_string();
+                let is_neg = *x < 0;
+                let abs_scan = x.abs();
+
+                let head_delta_str = if !is_neg {
+                    &x.to_string()
+                } else {
+                    &("neg".to_owned() + &abs_scan.to_string())
+                };
+                let global_name = "_ymm@indices".to_owned() + &head_delta_str;
 
                 if !generated_indices.contains(x) {
                     globals += &("\t.globl\t".to_owned() + &global_name + "\n");
                     globals += &("\t.section	.rdata,\"dr\",discard,".to_owned() + &global_name + "\n");
                     globals += &("\t.p2align	5, 0x0\n");
                     globals += &(global_name.to_owned() + ":\n");
-                    for i in 0..8 {
-                        globals += &("\t.long\t".to_owned() + &((i * *x).to_string()) + "\n");
+
+                    if !is_neg {
+                        for i in 0..8 {
+                            globals += &("\t.long\t".to_owned() + &((i * abs_scan).to_string()) + "\n");
+                        }
+                    } else {
+                        for i in (0..8).rev() {
+                            globals += &("\t.long\t".to_owned() + &((i * abs_scan).to_string()) + "\n");
+                        }
                     }
 
                     generated_indices.insert(*x);
                 }
 
-                let bytes_per_iter = 8 * *x;
+                let bytes_per_iter = 8 * abs_scan;
 
-                instructions += "	movq	%r12, %rax\n";
-                instructions += &("	vmovdqa	".to_owned() + &global_name + "(%rip), %ymm0\n");
-                instructions += "	vpxor	%xmm1, %xmm1, %xmm1\n";
-                instructions += "	vpbroadcastd	__real@ffffff00(%rip), %ymm2\n";
-                instructions += &("	movl	$".to_owned() + &bytes_per_iter.to_string() + ", %edx\n");
-                instructions += "	.p2align	4, 0x90\n";
-                instructions += &(loop_label.to_owned() + ":                                # =>This Inner Loop Header: Depth=1\n");
-                instructions += "	vpcmpeqd	%ymm3, %ymm3, %ymm3\n";
-                instructions += "	vpxor	%xmm4, %xmm4, %xmm4\n";
-                instructions += "	vpgatherdd	%ymm3, (%rax,%ymm0), %ymm4\n";
-                instructions += "	vpor	%ymm2, %ymm4, %ymm3\n";
-                instructions += "	vpcmpeqb	%ymm1, %ymm3, %ymm3\n";
-                instructions += "	vpmovmskb	%ymm3, %r8d\n";
-                instructions += "	tzcntl	%r8d, %r9d\n";
-                instructions += "	shrl	$2, %r9d\n";
-	            instructions += &("	imull	$".to_owned() + &x.to_string() + ", %r9d, %r9d\n");
-                instructions += "	addq	%rax, %r9\n";
-                instructions += &("	addq	$".to_owned() + &bytes_per_iter.to_string() + ", %rax\n");
-                instructions += "	movq	%r9, %r12\n";
-                instructions += "	testl	%r8d, %r8d\n";
-                instructions += &("	je	".to_owned() + &loop_label + "\n");
-                instructions += "# %bb.2:\n";
-                instructions += "	vzeroupper\n";
+                if !is_neg {
+                    instructions += "	movq	%r12, %rax\n";
+                    instructions += &("	vmovdqa	".to_owned() + &global_name + "(%rip), %ymm0\n");
+                    instructions += "	vpxor	%xmm1, %xmm1, %xmm1\n";
+                    instructions += "	vpbroadcastd	__real@ffffff00(%rip), %ymm2\n";
+                    instructions += &("	movl	$".to_owned() + &bytes_per_iter.to_string() + ", %edx\n");
+                    instructions += "	.p2align	4, 0x90\n";
+                    instructions += &(loop_label.to_owned() + ":                                # =>This Inner Loop Header: Depth=1\n");
+                    instructions += "	vpcmpeqd	%ymm3, %ymm3, %ymm3\n";
+                    instructions += "	vpxor	%xmm4, %xmm4, %xmm4\n";
+                    instructions += "	vpgatherdd	%ymm3, (%rax,%ymm0), %ymm4\n";
+                    instructions += "	vpor	%ymm2, %ymm4, %ymm3\n";
+                    instructions += "	vpcmpeqb	%ymm1, %ymm3, %ymm3\n";
+                    instructions += "	vpmovmskb	%ymm3, %r8d\n";
+                    instructions += "	tzcntl	%r8d, %r9d\n";
+                    instructions += "	shrl	$2, %r9d\n";
+                    instructions += &("	imull	$".to_owned() + &abs_scan.to_string() + ", %r9d, %r9d\n");
+                    instructions += "	addq	%rax, %r9\n";
+                    instructions += &("	addq	$".to_owned() + &bytes_per_iter.to_string() + ", %rax\n");
+                    instructions += "	movq	%r9, %r12\n";
+                    instructions += "	testl	%r8d, %r8d\n";
+                    instructions += &("	je	".to_owned() + &loop_label + "\n");
+                    instructions += "# %bb.2:\n";
+                    instructions += "	vzeroupper\n";
+                } else {
+                    let start_offset = 7 * abs_scan;
+
+                    instructions += "	movq	%r12, %rax\n";
+                    instructions += &("	addq	$-".to_owned() + &start_offset.to_string() + ", %rax\n");
+                    instructions += "	movq	%rax, %r12\n";
+                    instructions += &("	vmovdqa	".to_owned() + &global_name + "(%rip), %ymm0\n");
+                    instructions += "	vpxor	%xmm1, %xmm1, %xmm1\n";
+                    instructions += "	vpbroadcastd	__real@ffffff00(%rip), %ymm2\n";
+                    instructions += "	.p2align	4, 0x90\n";
+                    instructions += &(loop_label.to_owned() + ":                                # =>This Inner Loop Header: Depth=1\n");
+                    instructions += "	vpcmpeqd	%ymm3, %ymm3, %ymm3\n";
+                    instructions += "	vpxor	%xmm4, %xmm4, %xmm4\n";
+                    instructions += "	vpgatherdd	%ymm3, (%rax,%ymm0), %ymm4\n";
+                    instructions += "	vpor	%ymm2, %ymm4, %ymm3\n";
+                    instructions += "	vpcmpeqb	%ymm1, %ymm3, %ymm3\n";
+                    instructions += "	vpmovmskb	%ymm3, %edx\n";
+                    instructions += "	tzcntl	%edx, %r8d\n";
+                    instructions += "	shrl	$2, %r8d\n";
+                    instructions += &("	imull	$".to_owned() + &abs_scan.to_string() + ", %r8d, %r8d\n");
+                    instructions += "	movq	%rax, %r9\n";
+                    instructions += "	subq	%r8, %r9\n";
+                    instructions += &("	addq	$".to_owned() + &start_offset.to_string() + ", %r9\n");
+                    instructions += &("	addq	$-".to_owned() + &bytes_per_iter.to_string() + ", %rax\n");
+                    instructions += "	testl	%edx, %edx\n";
+                    instructions += "	cmovneq	%r9, %rax\n";
+                    instructions += "	movq	%rax, %r12\n";
+                    instructions += &("	je	".to_owned() + &loop_label + "\n");
+                    instructions += "# %bb.2:\n";
+                    instructions += "	vzeroupper\n";
+                }
             }
 
             Instruction::Nop => (),
@@ -950,6 +1001,18 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_loop_left() {
+        let mut prog = lex("[<]");
+        vectorize_scans(&mut prog);
+
+        assert_eq!(prog, [
+            Instruction::Scan(-1),
+            Instruction::Nop,
+            Instruction::Nop,
+        ]);
+    }
+
+    #[test]
     fn test_scan_loop_2() {
         let mut prog = lex("[>>]");
         vectorize_scans(&mut prog);
@@ -979,6 +1042,23 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_scan_loop_left() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("+<++<+++<++++<+++++<<++++++>>>>>>[<]<.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 6);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+
+    #[test]
     fn test_execute_scan_loop_2() {
         let mut input = Vec::new();
 
@@ -995,15 +1075,38 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_scan_loop_2_left() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("+<<++<<+++<<<++++<+++++>>>>>>>>[<<]<.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 4);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+
+    #[test]
     fn test_execute_scan_loop_random() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(1);
 
         let num_tests = 10;
-        let num_cells = 10;
-        let max_scan = 3;
+        let num_cells = 50;
+        let max_scan = 20;
 
         for _ in 0..num_tests {
             let mut input_prog = Vec::new();
+
+            let scan_dist = rand::distributions::Uniform::new(-max_scan, max_scan);
+            let mut scan_num_skipped : i32 = rng.sample(scan_dist);
+            if scan_num_skipped == 0 {
+                scan_num_skipped += 1;
+            }
 
             // Select a random cell to hold cell
             let rand_cell_dist = rand::distributions::Uniform::new(0, num_cells);
@@ -1019,26 +1122,39 @@ mod tests {
                     }
                 }
 
-                input_prog.push(">");
+                if scan_num_skipped > 0 {
+                    input_prog.push(">");
+                } else {
+                    input_prog.push("<");
+                }
             }
 
             // Reset head
             for i in 0..num_cells {
-                input_prog.push("<");
+                if scan_num_skipped > 0 {
+                    input_prog.push("<");
+                } else {
+                    input_prog.push(">");
+                }
             }
 
             // Generate scan loop
             // TODO(Kincaid): Add support for negative head deltas
-            let scan_dist = rand::distributions::Uniform::new(0, max_scan);
-            let mut scan_num_skipped = rng.sample(scan_dist);
-            if scan_num_skipped == 0 {
-                scan_num_skipped += 1;
-            }
             input_prog.push("[");
-            for _ in 0..scan_num_skipped {
-                input_prog.push(">");
+            for _ in 0..(scan_num_skipped.abs()) {
+                if scan_num_skipped > 0 {
+                    input_prog.push(">");
+                } else {
+                    input_prog.push("<");
+                }
             }
-            input_prog.push("]>.");
+            input_prog.push("]");
+            if scan_num_skipped > 0 {
+                input_prog.push(">");
+            } else {
+                input_prog.push("<");
+            }
+            input_prog.push(".");
 
             let mut prog = lex(&(input_prog.join("")));
             //println!("{}", input.join(""));
