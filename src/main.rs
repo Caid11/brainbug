@@ -9,10 +9,12 @@ mod interp;
 fn print_usage() {
     println!("Usage: brainbug interp [path to bf file] [options]");
     println!("       brainbug compile [path to bf file] [options]");
-    println!("Options: -p  Print profile data (interp only)");
-    println!("         -t  Print execution time");
-    println!("         -r  execute compiled binary (compile only)");
-    println!("         -S  compile to asm instead of exe (compile only)");
+    println!("Options: -p                  Print profile data (interp only)");
+    println!("         -t                  Print execution time");
+    println!("         -r                  execute compiled binary (compile only)");
+    println!("         -S                  compile to asm instead of exe (compile only)");
+    println!("         -no-loop-simplify   compile to asm instead of exe (compile only)");
+    println!("         -no-scan-vectorize  compile to asm instead of exe (compile only)");
 }
 
 fn main() -> ExitCode {
@@ -24,6 +26,8 @@ fn main() -> ExitCode {
     let mut time = false;
     let mut run = false;
     let mut compile_to_asm = false;
+    let mut simplify_loops = true;
+    let mut vectorize_scans = true;
 
     for i in 1..args.len() {
         // Flag arguments
@@ -38,6 +42,12 @@ fn main() -> ExitCode {
             continue;
         } else if args[i] == "-S" {
             compile_to_asm = true;
+            continue;
+        } else if args[i] == "-no-loop-simplify" {
+            simplify_loops = false;
+            continue;
+        } else if args[i] == "-no-scan-vectorize" {
+            vectorize_scans = false;
             continue;
         }
 
@@ -83,7 +93,7 @@ fn main() -> ExitCode {
         }
     } else if mode == "compile" {
         let mut program = common::lex(&input);
-        let compiled_asm = compile::compile_to_asm(&mut program, true, true);
+        let compiled_asm = compile::compile_to_asm(&mut program, simplify_loops, vectorize_scans);
 
         let input_filepath = Path::new(file_path);
 
