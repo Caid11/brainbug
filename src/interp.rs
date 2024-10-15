@@ -12,7 +12,7 @@ enum Cell {
 struct LoopEnterState {
     tape: VecDeque<Cell>,
     head_pos: usize,
-    outputted_head_pos: usize,
+    outputted_head_pos: isize,
     tape_offset: isize, 
     program_counter: usize,
     emitted_insts: Vec<Instruction>,
@@ -21,7 +21,7 @@ struct LoopEnterState {
 pub struct State {
     tape: VecDeque<Cell>,
     head_pos: usize,
-    outputted_head_pos: usize,
+    outputted_head_pos: isize,
 
     // Because the interpreter can shift the tape when the head goes negative, we need to keep
     // track of how much it's been shifted and account for that when we emit instructions referring
@@ -180,11 +180,13 @@ impl State {
     }
 
     fn sync_compiled_head_pos(&mut self, insts: &mut Vec<Instruction>) {
-        if self.head_pos != self.outputted_head_pos {
-            let head_pos : i32 = self.head_pos.try_into().unwrap();
-            let offset : i32 = self.tape_offset.try_into().unwrap();
-            insts.push(Instruction::SetHeadPos(head_pos - offset));
-            self.outputted_head_pos = self.head_pos;
+        let head_pos : i32 = self.head_pos.try_into().unwrap();
+        let offset : i32 = self.tape_offset.try_into().unwrap();
+        let head_offset : i32 = head_pos - offset;
+
+        if head_offset != self.outputted_head_pos.try_into().unwrap() {
+            insts.push(Instruction::SetHeadPos(head_offset));
+            self.outputted_head_pos = head_offset.try_into().unwrap();
         }
     }
 
@@ -197,7 +199,7 @@ impl State {
             if self.program_counter >= self.program.len() {
                 break;
             }
-
+            
             match self.program[self.program_counter] {
                 Instruction::MoveRight => self.move_right(),
                 Instruction::MoveLeft => self.move_left(),
@@ -1043,6 +1045,24 @@ mod tests {
             Instruction::Write,
         ]);
         assert_eq!(state.tape, [Cell::Unknown]);
+    }
+
+    #[test]
+    fn test_partial_eval_sync_head_pos_start() {
+        let program = lex("<+[,]");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::SetHeadPos(-1),
+            Instruction::SetCell(-1, 1),
+            Instruction::SetCell(0, 0),
+            Instruction::JumpIfZero,
+            Instruction::Read,
+            Instruction::JumpUnlessZero,
+        ]);
+        assert_eq!(state.tape, [Cell::Val(1), Cell::Val(0)]);
     }
 
     #[test]

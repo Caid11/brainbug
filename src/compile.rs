@@ -1295,7 +1295,7 @@ mod tests {
             let input_prog = std::fs::read_to_string(prog_path.clone()).expect("unable to read file");
             let mut input = input.clone();
 
-            let run_res = compile_and_run_with_input(&mut lex(&input_prog), &input, true, true, false).unwrap();
+            let run_res = compile_and_run_with_input(&mut lex(&input_prog), &input, true, true, true).unwrap();
             assert!(run_res.status.success());
 
             let mut orig_output = Vec::new();
