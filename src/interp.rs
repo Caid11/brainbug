@@ -3,13 +3,41 @@ use std::{collections::{HashMap, VecDeque}, io::{self, ErrorKind, Read, Write}, 
 
 use crate::common::*;
 
-pub struct State {
-    tape: VecDeque<u8>,
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum Cell {
+    Unknown,
+    Val(u8)
+}
+
+struct LoopEnterState {
+    tape: VecDeque<Cell>,
     head_pos: usize,
+    outputted_head_pos: usize,
+    tape_offset: isize, 
+    program_counter: usize,
+    emitted_insts: Vec<Instruction>,
+}
+
+pub struct State {
+    tape: VecDeque<Cell>,
+    head_pos: usize,
+    outputted_head_pos: usize,
+
+    // Because the interpreter can shift the tape when the head goes negative, we need to keep
+    // track of how much it's been shifted and account for that when we emit instructions referring
+    // to the head's position
+    tape_offset: isize, 
 
     program_counter: usize,
     program: Vec<Instruction>,
     execution_counter: Vec<usize>,
+
+    // If the PC becomes unknown inside of a loop, we need to reset the execution's state to the
+    // beginning of the last outermost loop, then begin execution from there.
+    loop_enter_state : Option<LoopEnterState>,
+
+    // Also track loop level, so we can clear the loop state when we exit the outermost loop.
+    loop_level : i32,
 
     jump_dests: HashMap<usize, usize>,
 }
@@ -17,7 +45,7 @@ pub struct State {
 impl State {
     pub fn new(program: Vec<Instruction>) -> Self {
         let mut t = VecDeque::new();
-        t.push_back(0);
+        t.push_back(Cell::Val(0));
 
         let execution_counter = vec![0; program.len()];
         let jump_dests = compute_jump_dests(&program);
@@ -25,9 +53,13 @@ impl State {
         State {
             tape: t,
             head_pos: 0,
+            outputted_head_pos: 0,
+            tape_offset: 0,
             program_counter: 0,
             program,
             execution_counter,
+            loop_enter_state: None,
+            loop_level: 0,
             jump_dests,
         }
     }
@@ -36,7 +68,7 @@ impl State {
         self.head_pos += 1;
 
         if self.head_pos >= self.tape.len() {
-            self.tape.push_back(0);
+            self.tape.push_back(Cell::Val(0));
         }
 
         self.program_counter += 1;
@@ -44,7 +76,8 @@ impl State {
 
     fn move_left(&mut self) {
         if self.head_pos == 0 {
-            self.tape.push_front(0);
+            self.tape.push_front(Cell::Val(0));
+            self.tape_offset += 1;
         } else {
             self.head_pos -= 1;
         }
@@ -53,21 +86,31 @@ impl State {
     }
 
     fn increment(&mut self) {
-        let curr = self.tape[self.head_pos];
-        self.tape[self.head_pos] = u8::wrapping_add(curr, 1u8);
+        match self.tape[self.head_pos] {
+            Cell::Unknown => panic!("incremented unknown cell"),
+            Cell::Val(x) => self.tape[self.head_pos] = Cell::Val(u8::wrapping_add(x, 1u8))
+        }
 
         self.program_counter += 1;
     }
 
     fn decrement(&mut self) {
-        self.tape[self.head_pos] = u8::wrapping_sub(self.tape[self.head_pos], 1u8);
+        match self.tape[self.head_pos] {
+            Cell::Unknown => panic!("decremented unknown cell"),
+            Cell::Val(x) => self.tape[self.head_pos] = Cell::Val(u8::wrapping_sub(x, 1u8))
+        }
 
         self.program_counter += 1;
     }
 
     fn write(&mut self, mut writer : impl Write) {
-        let buf = [self.tape[self.head_pos];1];
-        writer.write_all(&buf).expect("unable to write buf");
+        match self.tape[self.head_pos] {
+            Cell::Unknown => panic!("wrote unknown cell"),
+            Cell::Val(x) => {
+                let buf = [x;1];
+                writer.write_all(&buf).expect("unable to write buf");
+            }
+        }
 
         self.program_counter += 1;
     }
@@ -82,13 +125,16 @@ impl State {
             Err(_) => panic!("Error while reading from stdin!")
         }
 
-        self.tape[self.head_pos] = buf[0];
+        self.tape[self.head_pos] = Cell::Val(buf[0]);
 
         self.program_counter += 1;
     }
 
     fn jump_if_zero(&mut self) {
-        let curr_value = self.tape[self.head_pos];
+        let curr_value = match self.tape[self.head_pos] {
+            Cell::Unknown => panic!("jump if 0 with unknown cell"),
+            Cell::Val(x) => x
+        };
         
         if curr_value == 0 {
             self.program_counter = self.jump_dests[&self.program_counter];
@@ -98,8 +144,11 @@ impl State {
     }
 
     fn jump_unless_zero(&mut self) {
-        let curr_value = self.tape[self.head_pos];
-
+        let curr_value = match self.tape[self.head_pos] {
+            Cell::Unknown => panic!("jump unless 0 with unknown cell"),
+            Cell::Val(x) => x
+        };
+ 
         if curr_value != 0 {
             self.program_counter = self.jump_dests[&self.program_counter];
         } else {
@@ -128,6 +177,154 @@ impl State {
                 _ => panic!("unhandled instruction: {}", self.program[self.program_counter])
             }
         }
+    }
+
+    fn sync_compiled_head_pos(&mut self, insts: &mut Vec<Instruction>) {
+        if self.head_pos != self.outputted_head_pos {
+            let head_pos : i32 = self.head_pos.try_into().unwrap();
+            let offset : i32 = self.tape_offset.try_into().unwrap();
+            insts.push(Instruction::SetHeadPos(head_pos - offset));
+            self.outputted_head_pos = self.head_pos;
+        }
+    }
+
+    // Evaluate all instructions not tainted by input. After all instructions are evaluated, emit
+    // instructions to setup the head and tape state when evaluation has finished.
+    pub fn partial_eval(&mut self) -> Vec<Instruction> {
+        let mut insts = Vec::new();
+
+        loop {
+            if self.program_counter >= self.program.len() {
+                break;
+            }
+
+            match self.program[self.program_counter] {
+                Instruction::MoveRight => self.move_right(),
+                Instruction::MoveLeft => self.move_left(),
+
+                Instruction::Increment => {
+                    match self.tape[self.head_pos] {
+                        Cell::Unknown => {
+                            self.sync_compiled_head_pos(&mut insts);
+                            insts.push(Instruction::Increment);
+                            self.program_counter += 1;
+                        }
+                        Cell::Val(_) => self.increment(),
+                    }
+                }
+
+                Instruction::Decrement => {
+                    match self.tape[self.head_pos] {
+                        Cell::Unknown => {
+                            self.sync_compiled_head_pos(&mut insts);
+                            insts.push(Instruction::Decrement);
+                            self.program_counter += 1;
+                        }
+                        Cell::Val(_) => self.decrement(),
+                    }
+                }
+
+                Instruction::Write => {
+                    match self.tape[self.head_pos] {
+                        Cell::Unknown => {
+                            self.sync_compiled_head_pos(&mut insts);
+                            insts.push(Instruction::Write);
+                        }
+                        Cell::Val(x) => insts.push(Instruction::Output(x))
+                    };
+                    self.program_counter += 1;
+                },
+
+                Instruction::Read => {
+                    self.sync_compiled_head_pos(&mut insts);
+
+                    self.tape[self.head_pos] = Cell::Unknown;
+                    insts.push(Instruction::Read);
+                    self.program_counter += 1;
+                },
+
+                Instruction::JumpIfZero => {
+                    match self.tape[self.head_pos] {
+                        // We no longer know the PC. Bail out and compile the rest of the
+                        // instructions.
+                        Cell::Unknown => break,
+                        Cell::Val(_) => {
+                            match self.loop_enter_state {
+                                None => {
+                                    self.loop_enter_state = Some(LoopEnterState{
+                                        tape: self.tape.clone(),
+                                        head_pos: self.head_pos,
+                                        outputted_head_pos: self.outputted_head_pos,
+                                        tape_offset: self.tape_offset,
+                                        program_counter: self.program_counter,
+                                        emitted_insts: insts.clone()
+                                    })
+                                }
+                                Some(_) => (),
+                            }
+                            self.loop_level += 1;
+                            self.jump_if_zero();
+                        }
+                    }
+                }
+                Instruction::JumpUnlessZero => {
+                    match self.tape[self.head_pos] {
+                        Cell::Val(_) => {
+                            self.jump_unless_zero();
+
+                            self.loop_level -= 1;
+                            if self.loop_level == 0 {
+                                self.loop_enter_state = None;
+                            }
+                        }
+                        Cell::Unknown => {
+                            break;
+                        }
+                    }
+                }
+                _ => panic!("unhandled instruction: {}", self.program[self.program_counter])
+            }
+        }
+
+        // If we bailed out while inside of a loop, restore the execution state to the point where
+        // we entered the outermost loop.
+        match &self.loop_enter_state {
+            None => (),
+            Some(s) => {
+                self.tape = s.tape.clone();
+                self.head_pos = s.head_pos;
+                self.outputted_head_pos = s.outputted_head_pos;
+                self.tape_offset = s.tape_offset;
+                self.program_counter = s.program_counter;
+                insts = s.emitted_insts.clone();
+            }
+        }
+
+        // We'll be emitting runtime instructions. Write out head and tape state.
+        if self.program_counter < self.program.len() {
+            self.sync_compiled_head_pos(&mut insts);
+
+            for idx in 0..self.tape.len() {
+                match self.tape[idx] {
+                    Cell::Unknown => (),
+                    Cell::Val(x) => {
+                        let idx : i32 = idx.try_into().unwrap();
+                        let offset : i32 = self.tape_offset.try_into().unwrap();
+                        let offset_idx : i32 = idx - offset;
+
+                        insts.push(Instruction::SetCell(offset_idx, x));
+                    }
+                }
+            }
+        }
+
+        // If there are any instructions after this point, simply output them and let the compiler
+        // handle them.
+        for pc in self.program_counter..self.program.len() {
+            insts.push(self.program[pc]);
+        }
+
+        return insts;
     }
 
     fn get_loop_executions(&self) -> (Vec<LoopExecution>, Vec<LoopExecution>) {
@@ -366,8 +563,8 @@ mod tests {
 
         assert_eq!(state.head_pos, 0);
         assert_eq!(state.tape.len(), 2);
-        assert_eq!(state.tape[0], 1);
-        assert_eq!(state.tape[1], 0);
+        assert_eq!(state.tape[0], Cell::Val(1));
+        assert_eq!(state.tape[1], Cell::Val(0));
     }
 
     #[test]
@@ -376,7 +573,7 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[0], 1);
+        assert_eq!(state.tape[0], Cell::Val(1));
     }
 
     #[test]
@@ -385,7 +582,7 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[0], u8::MAX);
+        assert_eq!(state.tape[0], Cell::Val(u8::MAX));
     }
 
     #[test]
@@ -396,7 +593,7 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[0], 0);
+        assert_eq!(state.tape[0], Cell::Val(0));
     }
 
     #[test]
@@ -407,8 +604,8 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[0], 1);
-        assert_eq!(state.tape[1], 0);
+        assert_eq!(state.tape[0], Cell::Val(1));
+        assert_eq!(state.tape[1], Cell::Val(0));
     }
 
     #[test]
@@ -418,8 +615,8 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[0], 1);
-        assert_eq!(state.tape[1], 2);
+        assert_eq!(state.tape[0], Cell::Val(1));
+        assert_eq!(state.tape[1], Cell::Val(2));
     }
 
     #[test]
@@ -430,8 +627,8 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[0], 0);
-        assert_eq!(state.tape[1], 5);
+        assert_eq!(state.tape[0], Cell::Val(0));
+        assert_eq!(state.tape[1], Cell::Val(5));
     }
 
     #[test]
@@ -441,7 +638,7 @@ mod tests {
         let mut state = State::new(program);
         state.interp(std::io::stdin(), std::io::stdout());
 
-        assert_eq!(state.tape[2], 50);
+        assert_eq!(state.tape[2], Cell::Val(50));
     }
 
     #[test]
@@ -617,6 +814,235 @@ mod tests {
         assert_eq!(complex_loops[1].num_times_executed, 2);
         assert_eq!(complex_loops[2].pc, 14);
         assert_eq!(complex_loops[2].num_times_executed, 1);
+    }
+
+    // Tests to add:
+    // - all insts in loop are emitted if pc becomes dirty at end of loop
+    // - tape state on loop enter is emitted if pc becomes dirty at end of loop
+    // - Nested loop becomes dirty on loop enter (outer loop insts + state are emitted)
+    // - Nested loop becomes dirty on loop exit (outer loop insts + state are emitted)
+
+    #[test]
+    fn test_partial_eval_simple() {
+        let program = lex("+.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [Instruction::Output(1)]);
+    }
+
+    #[test]
+    fn test_partial_eval_read_becomes_unknown() {
+        let program = lex(",");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [Instruction::Read]);
+        assert_eq!(state.tape[0], Cell::Unknown);
+    }
+
+    #[test]
+    fn test_partial_eval_known_and_unknown_cells() {
+        let program = lex(",>+++.<.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [Instruction::Read, Instruction::Output(3), Instruction::Write]);
+        assert_eq!(state.tape, [Cell::Unknown, Cell::Val(3)]);
+    }
+
+    #[test]
+    fn test_partial_eval_read_inc_write() {
+        let program = lex(",+++.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::Read,
+            Instruction::Increment,
+            Instruction::Increment,
+            Instruction::Increment,
+            Instruction::Write,
+        ]);
+        assert_eq!(state.tape, [Cell::Unknown]);
+    }
+
+    #[test]
+    fn test_partial_eval_negative_head_pos() {
+        let program = lex(">>,<<<,.>>>.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::SetHeadPos(2),
+            Instruction::Read,
+            Instruction::SetHeadPos(-1),
+            Instruction::Read,
+            Instruction::Write,
+            Instruction::SetHeadPos(2),
+            Instruction::Write,
+        ]);
+        assert_eq!(state.tape, [Cell::Unknown, Cell::Val(0), Cell::Val(0), Cell::Unknown]);
+    }
+
+    #[test]
+    fn test_partial_eval_loop() {
+        let program = lex("+++[->++<]>.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::Output(6),
+        ]);
+        assert_eq!(state.tape, [Cell::Val(0), Cell::Val(6)]);
+    }
+
+    #[test]
+    fn test_partial_eval_read_in_loop() {
+        let program = lex("+++[->++>,.<<]>.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::SetHeadPos(2),
+            Instruction::Read,
+            Instruction::Write,
+            Instruction::Read,
+            Instruction::Write,
+            Instruction::Read,
+            Instruction::Write,
+            Instruction::Output(6),
+        ]);
+        assert_eq!(state.tape, [Cell::Val(0), Cell::Val(6), Cell::Unknown]);
+    }
+
+    // TODO: We can recover cell state for a loop index!
+    //
+    // Example:
+    //   ,[->+<]>. 
+    //          ^ We know that the index cell will always be zero at this point.
+    //
+    // BUT: Does it matter? Would we be doing something our loop simplifier already handles?
+
+    #[test]
+    fn test_partial_eval_unknown_pc_loop_enter() {
+        let program = lex(",[->+<]>.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::Read,
+            Instruction::JumpIfZero,
+            Instruction::Decrement,
+            Instruction::MoveRight,
+            Instruction::Increment,
+            Instruction::MoveLeft,
+            Instruction::JumpUnlessZero,
+            Instruction::MoveRight,
+            Instruction::Write,
+        ]);
+        assert_eq!(state.tape, [Cell::Unknown]);
+    }
+
+    #[test]
+    fn test_partial_eval_unknown_pc_loop_enter_nested() {
+        let program = lex(">+++[->,[->+<]]>.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::SetHeadPos(1),
+            Instruction::SetCell(0,0),
+            Instruction::SetCell(1,3),
+            Instruction::JumpIfZero,
+            Instruction::Decrement,
+            Instruction::MoveRight,
+            Instruction::Read,
+            Instruction::JumpIfZero,
+            Instruction::Decrement,
+            Instruction::MoveRight,
+            Instruction::Increment,
+            Instruction::MoveLeft,
+            Instruction::JumpUnlessZero,
+            Instruction::JumpUnlessZero,
+            Instruction::MoveRight,
+            Instruction::Write
+        ]);
+        assert_eq!(state.tape, [Cell::Val(0), Cell::Val(3)]);
+    }
+
+
+    #[test]
+    fn test_partial_eval_unknown_pc_loop_exit() {
+        let program = lex("+>+++[,]<.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::SetHeadPos(1),
+            Instruction::SetCell(0, 1),
+            Instruction::SetCell(1, 3),
+            Instruction::JumpIfZero,
+            Instruction::Read,
+            Instruction::JumpUnlessZero,
+            Instruction::MoveLeft,
+            Instruction::Write,
+
+        ]);
+        assert_eq!(state.tape, [Cell::Val(1), Cell::Val(3)]);
+    }
+
+    // TODO: It would be nice if we only wrote out cell values that are actually used
+    #[test]
+    fn test_partial_eval_unknown_pc_head_and_tape_state_written() {
+        let program = lex("+>++<<+++>>>,[->+<]>.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::SetHeadPos(2),
+            Instruction::Read,
+            Instruction::SetCell(-1, 3),
+            Instruction::SetCell(0, 1),
+            Instruction::SetCell(1, 2),
+            Instruction::JumpIfZero,
+            Instruction::Decrement,
+            Instruction::MoveRight,
+            Instruction::Increment,
+            Instruction::MoveLeft,
+            Instruction::JumpUnlessZero,
+            Instruction::MoveRight,
+            Instruction::Write,
+        ]);
+        assert_eq!(state.tape, [Cell::Val(3), Cell::Val(1), Cell::Val(2), Cell::Unknown]);
+    }
+
+    #[test]
+    fn test_partial_eval_read_dec_write() {
+        let program = lex(",---.");
+
+        let mut state = State::new(program);
+        let insts = state.partial_eval();
+
+        assert_eq!(insts, [
+            Instruction::Read,
+            Instruction::Decrement,
+            Instruction::Decrement,
+            Instruction::Decrement,
+            Instruction::Write,
+        ]);
+        assert_eq!(state.tape, [Cell::Unknown]);
     }
 
     #[test]

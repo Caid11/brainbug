@@ -22,6 +22,15 @@ pub enum Instruction {
     // Scan until the head reaches a cell containing 0, moving the head by the specified number of cells each iteration
     Scan(i32),
 
+    // Set the head to the given position
+    SetHeadPos(i32),
+
+    // Set the cell to the given value
+    SetCell(i32, u8),
+
+    // Output the given literal value
+    Output(u8),
+
     Nop
 }
 
@@ -40,7 +49,10 @@ impl fmt::Display for Instruction {
             Instruction::Sub(offset) => write!(f, "SUB({offset})"),
             Instruction::Scan(x) => write!(f, "SCAN({x})"),
             Instruction::Nop => write!(f, "NOP"),
-            Instruction::Zero => write!(f, "ZERO")
+            Instruction::Zero => write!(f, "ZERO"),
+            Instruction::SetHeadPos(x) => write!(f, "SETHEADPOS({x})"),
+            Instruction::SetCell(pos, val) => write!(f, "SETCELL({pos}, {val})"),
+            Instruction::Output(val) => write!(f, "OUTPUT({val})")
         }
     }
 }
