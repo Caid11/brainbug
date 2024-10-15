@@ -28,6 +28,7 @@ fn main() -> ExitCode {
     let mut compile_to_asm = false;
     let mut simplify_loops = true;
     let mut vectorize_scans = true;
+    let mut partial_eval = false;
 
     for i in 1..args.len() {
         // Flag arguments
@@ -48,6 +49,9 @@ fn main() -> ExitCode {
             continue;
         } else if args[i] == "-no-scan-vectorize" {
             vectorize_scans = false;
+            continue;
+        } else if args[i] == "-partial-eval" {
+            partial_eval = true;
             continue;
         }
 
@@ -93,7 +97,7 @@ fn main() -> ExitCode {
         }
     } else if mode == "compile" {
         let mut program = common::lex(&input);
-        let compiled_asm = compile::compile_to_asm(&mut program, simplify_loops, vectorize_scans);
+        let compiled_asm = compile::compile_to_asm(&mut program, simplify_loops, vectorize_scans, partial_eval);
 
         let input_filepath = Path::new(file_path);
 

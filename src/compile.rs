@@ -8,6 +8,7 @@ use std::fmt;
 use std::collections::{HashMap, HashSet};
 
 use crate::common::*;
+use crate::interp::State;
 
 const TEST_RUNNER : &str = "
 #include <stdio.h>
@@ -103,6 +104,7 @@ bf_main:
 	.seh_endprologue
 
 	movq %rcx, %r12
+	movq %rcx, %r13
 
 ";
 
@@ -314,7 +316,17 @@ fn vectorize_scans( program : &mut Vec<Instruction>) {
     }
 }
 
-pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool, do_simplify_scans : bool ) -> String {
+fn partial_eval( program : &mut Vec<Instruction>) {
+    let mut state = State::new(program.clone());
+    let insts = state.partial_eval();
+    *program = insts.clone();
+}
+
+pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool, do_simplify_scans : bool, do_partial_eval : bool ) -> String {
+    if do_partial_eval {
+        partial_eval(input);
+    }
+
     if do_simplify_loops {
         simplify_loops(input);
     }
@@ -478,6 +490,20 @@ pub fn compile_to_asm( input : &mut Vec<Instruction>, do_simplify_loops : bool, 
                 }
             }
 
+            Instruction::Output(x) => {
+                instructions += &format!("    movl ${x}, %ecx\n");
+                instructions += "	callq putchar\n";
+            },
+
+            Instruction::SetHeadPos(x) => {
+                instructions += "   movq %r13, %r12\n";
+                instructions += &format!("   addq ${x}, %r12\n");
+            },
+
+            Instruction::SetCell(pos, val) => {
+                instructions += &format!("   movb ${val}, {pos}(%r13)\n");
+            }
+
             Instruction::Nop => (),
 
             _ => panic!("unhandled instruction: {}", inst)
@@ -534,12 +560,12 @@ pub fn run( exe_path : &str ) -> Result<()> {
     }
 }
 
-fn compile_and_run_with_input( program : &mut Vec<Instruction>, program_input : &Vec<u8>, do_simplify_loops : bool, do_simplify_scans : bool ) -> Result<Output> {
+fn compile_and_run_with_input( program : &mut Vec<Instruction>, program_input : &Vec<u8>, do_simplify_loops : bool, do_simplify_scans : bool, do_partial_eval : bool ) -> Result<Output> {
     let output_dir = tempfile::Builder::new()
         .keep(false)
         .tempdir().map_err(|e| Box::new(e))?;
 
-    let asm = compile_to_asm(program, do_simplify_loops, do_simplify_scans);
+    let asm = compile_to_asm(program, do_simplify_loops, do_simplify_scans, do_partial_eval);
 
     let exe_path = output_dir.path().join("bf.exe");
     compile_to_exe(&asm, exe_path.to_str().unwrap()).expect("failed to compile program");
@@ -568,7 +594,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(""), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(""), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let err_output = String::from_utf8(run_res.stderr).unwrap();
@@ -580,7 +606,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -594,7 +620,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",+."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",+."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -608,7 +634,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("1".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",-."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",-."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -622,7 +648,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -636,7 +662,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("AB".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>,<."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>,<."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -651,7 +677,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>[<.>]"), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>[<.>]"), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -665,7 +691,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("A".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>+[<.>-]"), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+[<.>-]"), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -679,7 +705,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>+++++[<+>-]<."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+++++[<+>-]<."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -693,7 +719,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>+++[>++[<<+>>-]<-]<."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+++[>++[<<+>>-]<-]<."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -708,7 +734,7 @@ mod tests {
         let mut input = Vec::new();
         input.write("0".as_bytes());
 
-        let run_res = compile_and_run_with_input(&mut lex(",>+++[<+>-]++[<+>-]<."), &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut lex(",>+++[<+>-]++[<+>-]<."), &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = String::from_utf8(run_res.stdout).unwrap();
@@ -731,7 +757,7 @@ mod tests {
 
         let mut prog = lex("++++++[-].");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -755,7 +781,7 @@ mod tests {
 
         let mut prog = lex("++++++[+].");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -786,7 +812,7 @@ mod tests {
 
         let mut prog = lex("++++++[->+<]>.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -817,7 +843,7 @@ mod tests {
 
         let mut prog = lex("++++++[->-<]>.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -978,7 +1004,7 @@ mod tests {
 
         let mut prog = lex("++[->+++[->+<]<]>>.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -1031,7 +1057,7 @@ mod tests {
 
         let mut prog = lex("+>++>+++>++++>+++++>>++++++<<<<<<[>]>.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -1047,7 +1073,7 @@ mod tests {
 
         let mut prog = lex("+<++<+++<++++<+++++<<++++++>>>>>>[<]<.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -1064,7 +1090,7 @@ mod tests {
 
         let mut prog = lex(">+>>++>>+++>>>++++>+++++<<<<<<<<[>>]>.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -1080,7 +1106,7 @@ mod tests {
 
         let mut prog = lex("+<<++<<+++<<<++++<+++++>>>>>>>>[<<]<.");
 
-        let run_res = compile_and_run_with_input(&mut prog, &input, true, true).unwrap();
+        let run_res = compile_and_run_with_input(&mut prog, &input, true, true, false).unwrap();
         assert!(run_res.status.success());
 
         let output = run_res.stdout;
@@ -1163,7 +1189,7 @@ mod tests {
             let mut input = Vec::new();
             
             // Execute without vectorizing scans
-            let no_vec_run_res = compile_and_run_with_input(&mut prog, &input, false, false).unwrap();
+            let no_vec_run_res = compile_and_run_with_input(&mut prog, &input, false, false, false).unwrap();
             assert!(no_vec_run_res.status.success());
 
             let no_vec_output = no_vec_run_res.stdout;
@@ -1174,7 +1200,7 @@ mod tests {
             assert!(no_vec_err_output.find("Exited successfully").is_some());
 
             // Execute with vectorized scans
-            let with_vec_run_res = compile_and_run_with_input(&mut prog, &input, false, true).unwrap();
+            let with_vec_run_res = compile_and_run_with_input(&mut prog, &input, false, true, false).unwrap();
             assert!(with_vec_run_res.status.success());
 
             let with_vec_output = with_vec_run_res.stdout;
@@ -1203,6 +1229,57 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_partial_eval() {
+        let mut input = Vec::new();
+
+        let mut prog = lex("+.>++.>+++.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, false, false, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 3);
+        assert_eq!(output[0], 1);
+        assert_eq!(output[1], 2);
+        assert_eq!(output[2], 3);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_execute_partial_eval_one_unknown() {
+        let mut input = vec![7;1];
+
+        let mut prog = lex("+++>,<.>.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, false, false, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 2);
+        assert_eq!(output[0], 3);
+        assert_eq!(output[1], 7);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
+    fn test_execute_partial_eval_set_head_pos() {
+        let mut input = vec![1,2,0,3];
+
+        let mut prog = lex("+[,],.");
+
+        let run_res = compile_and_run_with_input(&mut prog, &input, false, false, true).unwrap();
+        assert!(run_res.status.success());
+
+        let output = run_res.stdout;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0], 3);
+        let err_output = String::from_utf8(run_res.stderr).unwrap();
+        assert!(err_output.find("Exited successfully").is_some());
+    }
+
+    #[test]
     #[ignore]
     fn test_bfcheck() {
         let (progs, outputs, input_path) = get_tests();
@@ -1218,7 +1295,7 @@ mod tests {
             let input_prog = std::fs::read_to_string(prog_path.clone()).expect("unable to read file");
             let mut input = input.clone();
 
-            let run_res = compile_and_run_with_input(&mut lex(&input_prog), &input, true, true).unwrap();
+            let run_res = compile_and_run_with_input(&mut lex(&input_prog), &input, true, true, false).unwrap();
             assert!(run_res.status.success());
 
             let mut orig_output = Vec::new();
