@@ -2,6 +2,8 @@ use std::{collections::{HashMap, VecDeque}, env, fs, io::{self, Read, Write}, pr
 use std::path::Path;
 use std::fs::File;
 
+use inkwell::context::Context;
+
 mod common;
 mod compile;
 mod interp;
@@ -9,6 +11,7 @@ mod interp;
 fn print_usage() {
     println!("Usage: brainbug interp [path to bf file] [options]");
     println!("       brainbug compile [path to bf file] [options]");
+    println!("       brainbug compile-llvm [path to bf file] [options]");
     println!("Options: -p                  Print profile data (interp only)");
     println!("         -t                  Print execution time");
     println!("         -r                  execute compiled binary (compile only)");
@@ -74,7 +77,7 @@ fn main() -> ExitCode {
         print_usage();
         return ExitCode::from(1);
     }
-    if (run || compile_to_asm) && mode != "compile" {
+    if (run || compile_to_asm) && (mode != "compile" && mode != "compile-llvm") {
         print_usage();
         return ExitCode::from(1);
     }
@@ -109,7 +112,7 @@ fn main() -> ExitCode {
             println!("Result written to {}", output_filepath);
         } else {
             let output_filepath = input_filepath.file_stem().unwrap().to_str().unwrap().to_owned() + ".exe";
-            compile::compile_to_exe(&compiled_asm, &output_filepath).expect("failed to assemble and link compiled asm");
+            compile::compile_asm_to_exe(&compiled_asm, &output_filepath).expect("failed to assemble and link compiled asm");
             println!("Result written to {}", output_filepath);
 
             if run {
@@ -122,7 +125,37 @@ fn main() -> ExitCode {
                 }
             }
 
-        }    }
+        }
+    } else if mode == "compile-llvm" {
+        let mut program = common::lex(&input);
+
+        let context = Context::create();
+        let module = compile::compile_to_llvm(&context, &mut program, simplify_loops);
+
+        let input_filepath = Path::new(file_path);
+
+        if compile_to_asm {
+            let output_filepath = input_filepath.file_stem().unwrap().to_str().unwrap().to_owned() + ".bc";
+            module.write_bitcode_to_path(Path::new(&output_filepath));
+
+            println!("Result written to {}", output_filepath);
+        } else {
+            let output_filepath = input_filepath.file_stem().unwrap().to_str().unwrap().to_owned() + ".exe";
+            compile::compile_llvm_to_exe(&module, &output_filepath, false).expect("failed to assemble and link compiled asm");
+            println!("Result written to {}", output_filepath);
+
+            if run {
+                let start_time = SystemTime::now();
+
+                compile::run(&output_filepath).expect("failed to run compiled BF program");
+
+                if time {
+                    println!("\nExecution time: {}", start_time.elapsed().unwrap().as_secs_f64());
+                }
+            }
+
+        }
+    }
 
     return ExitCode::from(0);
 }
